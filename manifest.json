@@ -1,0 +1,83 @@
+{
+  "manifest_version": 3,
+  "name": "并读 · 双语网页与文档翻译",
+  "version": "0.4.4",
+  "description": "在原网页逐段对照阅读，翻译扫描 PDF，导出双语 EPUB。使用自己的 DeepSeek API 密钥。",
+  "permissions": [
+    "storage",
+    "contextMenus",
+    "activeTab",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "https://api.deepseek.com/*"
+  ],
+  "background": {
+    "service_worker": "worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "并读 · 网页翻译",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png"
+    }
+  },
+  "options_page": "panel.html",
+  "side_panel": {
+    "default_path": "panel.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://*.youtube.com/*",
+        "https://*.youtube-nocookie.com/*"
+      ],
+      "js": [
+        "youtube-caption-source.js"
+      ],
+      "world": "MAIN",
+      "run_at": "document_start",
+      "all_frames": true
+    },
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*",
+        "file:///*"
+      ],
+      "js": [
+        "youtube-caption-track.js",
+        "youtube-captions.js",
+        "page.js",
+        "reading-controls.js"
+      ],
+      "css": [
+        "page.css"
+      ],
+      "all_frames": true
+    }
+  ],
+  "commands": {
+    "page": {
+      "suggested_key": {
+        "default": "Alt+A"
+      },
+      "description": "切换网页翻译"
+    },
+    "input": {
+      "suggested_key": {
+        "default": "Alt+I"
+      },
+      "description": "翻译当前输入框"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  }
+}
