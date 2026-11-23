@@ -1,3 +1,5 @@
+import './caption-frames.js';
+
 const endpoint = 'https://api.deepseek.com/chat/completions';
 const model = 'deepseek-flash';
 const cache = new Map();
@@ -203,8 +205,8 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     return true;
   }
   if (message.action === 'reader-command' && sender.tab && sender.frameId === 0 &&
-      ['dual', 'only', 'original', 'all', 'captions', 'captions-dual', 'captions-only', 'captions-off'].includes(message.command)) {
-    chrome.tabs.sendMessage(sender.tab.id, { action: message.command }, message.command.startsWith('captions') ? { frameId: 0 } : {})
+      ['dual', 'only', 'original', 'all'].includes(message.command)) {
+    chrome.tabs.sendMessage(sender.tab.id, { action: message.command })
       .then(reply, error => reply({ error: error.message }));
     return true;
   }

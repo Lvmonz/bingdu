@@ -61,15 +61,16 @@ ytd-text-inline-expander:is([is-expanded],[expanded],[hidden]) + pt-dual.pt-yt-p
   position: absolute !important;
   left: 50% !important;
   transform: translateX(-50%) !important;
-  bottom: auto !important;
+  top: auto !important;
+  bottom: clamp(12px, 10%, 80px) !important;
+  display: grid !important;
   z-index: 65 !important;
   width: max-content !important;
   max-width: 90% !important;
   box-sizing: border-box !important;
   margin: 0 !important;
-  padding: .14em .55em .19em !important;
-  border-radius: .15em !important;
-  background: rgba(0,0,0,.82) !important;
+  padding: 0 !important;
+  background: transparent !important;
   color: white !important;
   font: 450 clamp(15px, 1.65vw, 32px)/1.32 system-ui, sans-serif !important;
   white-space: pre-line !important;
@@ -77,6 +78,8 @@ ytd-text-inline-expander:is([is-expanded],[expanded],[hidden]) + pt-dual.pt-yt-p
   text-align: center !important;
   pointer-events: none !important;
 }
+/* 原文从两行译文的预留区域上方向上换行，迟到的译文从同一位置向下填充。 */
+.pt-youtube-caption[data-bilingual] { grid-template-rows: auto minmax(calc(2lh + .23em), auto) !important; }
 .pt-youtube-caption[hidden] { display: none !important; }
 
 :is([data-bingdu-captions], #movie_player:has(> .pt-youtube-caption))
@@ -86,6 +89,44 @@ ytd-text-inline-expander:is([is-expanded],[expanded],[hidden]) + pt-dual.pt-yt-p
   pointer-events: none !important;
 }
 [data-bingdu-captions] video::-webkit-media-text-track-container { visibility: hidden !important; }
-.pt-youtube-caption > div { display: block !important; }
+.pt-youtube-caption > div {
+  display: block !important;
+  align-self: start;
+  padding: .14em .55em .19em;
+  background: rgba(0,0,0,.82);
+  border-radius: .15em;
+}
 .pt-youtube-caption > div[hidden] { display: none !important; }
-.pt-youtube-caption > .pt-caption-target:not(:first-child) { margin-top: .04em; }
+.pt-youtube-caption[data-bilingual] > .pt-caption-target { grid-row: 2; }
+.pt-youtube-caption[data-bilingual] > .pt-caption-source { padding-bottom: 0; }
+.pt-youtube-caption:has(> .pt-caption-target:not([hidden])) > .pt-caption-source {
+  border-radius: .15em .15em 0 0;
+}
+.pt-youtube-caption > .pt-caption-source:not([hidden]) + .pt-caption-target {
+  padding-top: .04em;
+  border-radius: 0 0 .15em .15em;
+}
+
+select.pt-embed-caption-control {
+  align-self: center;
+  vertical-align: middle;
+  box-sizing: border-box;
+  height: 26px;
+  max-width: 95px;
+  margin: 0 3px;
+  padding: 0 4px;
+  border: 1px solid #ffffff70;
+  border-radius: 4px;
+  background: #1d302c;
+  color: #fff;
+  font: 500 12px/1.3 system-ui, sans-serif;
+  color-scheme: dark;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.pt-embed-caption-control:focus-visible { outline: 2px solid #b0e4cb; }
+.pt-embed-caption-floating {
+  position: absolute;
+  inset: auto 8px 12% auto;
+  z-index: 200;
+}

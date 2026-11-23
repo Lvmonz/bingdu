@@ -1,5 +1,5 @@
 (() => {
-  if (!/(^|\.)youtube(?:-nocookie)?\.com$/i.test(location.hostname)) return;
+  if (!/(^|\.)youtube(?:-nocookie|education)?\.com$/i.test(location.hostname)) return;
 
   const requestEvent = 'bingdu-youtube-source-request';
   const stateEvent = 'bingdu-youtube-source-state';
@@ -13,9 +13,13 @@
     } catch { return ''; }
   }
   const family = code => code.split('-')[0];
-  const pageId = () => new URLSearchParams(location.search).get('v') ||
-    location.pathname.match(/^\/(?:embed|shorts|live)\/([^/]+)/)?.[1];
+  const embed = /^\/embed(?:\/|$)/.test(location.pathname);
+  // The embed URL stays the same when its API or playlist loads another video.
+  const pageId = () => embed ? 'embed' : new URLSearchParams(location.search).get('v') ||
+    location.pathname.match(/^\/(?:shorts|live)\/([^/]+)/)?.[1];
   const playerId = p => p?.getVideoData?.()?.video_id || p?.getPlayerResponse?.()?.videoDetails?.videoId;
+  const cc = '.ytp-subtitles-button,.ytmClosedCaptioningButtonButton';
+  const captionButton = p => (embed && document.querySelector(':is(#player-control-overlay,#player-controls) :is(' + cc + ')')) || p.querySelector(cc);
   const current = p => p.getOption?.('captions', 'track');
   const translated = t => language(t?.translationLanguage?.languageCode ?? t?.translation_language?.languageCode);
   const display = t => translated(t) || language(t?.languageCode);
@@ -64,7 +68,7 @@
 
   function state(s, status, track) {
     s.status = status;
-    const detail = JSON.stringify({ session: s.session, videoId: s.videoId, status,
+    const detail = JSON.stringify({ session: s.session, videoId: s.videoId, mediaId: s.mediaId || '', status,
       language: s.source || '', displayLanguage: display(track), switched: !!s.switched });
     if (s.last === detail || active !== s) return;
     s.last = detail;
@@ -81,7 +85,7 @@
     cancelRestoration = cancel;
     function check() {
       try {
-        if (active || !s.player.isConnected || pageId() !== s.videoId || playerId(s.player) !== s.videoId) {
+        if (active || !s.player.isConnected || pageId() !== s.videoId || playerId(s.player) !== s.mediaId) {
           cancel();
           return;
         }
@@ -90,7 +94,7 @@
           cancel();
           s.player.setOption('captions', 'track', s.previous);
         } else if (!s.confirmed && Date.now() < s.switchDeadline && sameTrack(selected, s.previous) &&
-            s.player.querySelector('.ytp-subtitles-button')?.getAttribute('aria-pressed') !== 'false') {
+            captionButton(s.player)?.getAttribute('aria-pressed') !== 'false') {
           // Stop may precede an asynchronous setOption. Restore only after
           // the requested track actually lands, and abandon any third choice.
           timer = setTimeout(check, 100);
@@ -116,7 +120,8 @@
     if (pageId() !== s.videoId) { finish(false); return; }
     const players = [...document.querySelectorAll('#movie_player,.html5-video-player')].filter(el =>
       !el.matches('.ad-showing,.ad-interrupting') && el.querySelector('video') && el.getClientRects().length);
-    const p = players.find(el => typeof el.getOption === 'function' && playerId(el) === s.videoId);
+    const p = players.find(el => typeof el.getOption === 'function' &&
+      (embed ? !!playerId(el) : playerId(el) === s.videoId));
     if (!p) {
       s.current = null;
       if (s.confirmed) return 'pending';
@@ -124,12 +129,16 @@
         [...el.querySelectorAll('.ytp-caption-segment')].some(seg => seg.getClientRects().length && seg.textContent.trim()));
       return 'unsupported';
     }
-    if (s.player && s.player !== p) {
+    const mediaId = playerId(p);
+    if (s.player && (s.player !== p || s.mediaId !== mediaId)) {
       s.wanted = s.previous = null;
-      s.switched = s.confirmed = s.retried = false;
+      s.switched = s.confirmed = s.retried = s.userSelected = s.missing = false;
+      s.menuChoiceUntil = 0;
+      s.source = '';
       s.deadline = Date.now() + 8000;
     }
     s.player = p;
+    s.mediaId = mediaId;
     const track = current(p);
     s.current = track;
 
@@ -192,8 +201,10 @@
     if (!s.domOnly && !s.missing && !s.wanted && Date.now() < s.deadline &&
         (status === 'unavailable' || status === 'unsupported')) status = 'pending';
     state(s, status, s.current);
-    if (s !== active || !['pending', 'ready', 'same-language', 'alternate'].includes(status)) return;
-    s.timer = setTimeout(() => tick(s), status === 'pending' && !s.confirmed ? 200 : 350);
+    if (s !== active) return;
+    const settled = status === 'unavailable' || status === 'unsupported';
+    if (settled && !embed) return;
+    s.timer = setTimeout(() => tick(s), settled ? 1000 : status === 'pending' && !s.confirmed ? 200 : 350);
   }
 
   document.addEventListener(requestEvent, event => {

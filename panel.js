@@ -20,8 +20,8 @@ async function currentTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   return tab;
 }
-async function currentSite() {
-  const tab = await currentTab();
+async function currentSite(tab) {
+  tab ??= await currentTab();
   if (!tab?.id) return '';
   return chrome.tabs.sendMessage(tab.id, { action: 'hostname' }, { frameId: 0 })
     .then(response => response?.site ?? response?.hostname, () => '');
@@ -41,11 +41,18 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
   if (changes.autoSites) void refreshAuto();
 });
+let refreshNumber = 0;
 async function refreshAuto() {
-  const [site, { autoSites }] = await Promise.all([currentSite(), chrome.storage.local.get(defaults)]);
-  const youtube = /(^|\.)youtube(?:-nocookie)?\.com$/.test(site || '');
-  document.querySelector('[data-action="captions"]').hidden = youtube;
-  for (const button of document.querySelectorAll('[data-action^="captions-"]')) button.hidden = !youtube;
+  const serial = ++refreshNumber;
+  const tab = await currentTab();
+  const [site, { autoSites }, captions] = await Promise.all([
+    currentSite(tab), chrome.storage.local.get({ autoSites: [] }),
+    tab?.id && chrome.runtime.sendMessage({ action: 'caption-tab-state', tabId: tab.id }).catch(() => null)
+  ]);
+  if (serial !== refreshNumber) return;
+  const supportsCaptionModes = !!captions?.available;
+  document.querySelector('[data-action="captions"]').hidden = supportsCaptionModes;
+  for (const button of document.querySelectorAll('[data-action^="captions-"]')) button.hidden = !supportsCaptionModes;
   byId('auto-label').textContent = site?.startsWith('file:') ? '自动翻译此文件' : '自动翻译此网站';
   byId('auto').disabled = !site;
   byId('auto').checked = autoSites.includes(site);
@@ -53,6 +60,11 @@ async function refreshAuto() {
 chrome.tabs.onActivated.addListener(() => void refreshAuto());
 chrome.tabs.onUpdated.addListener((_id, change) => {
   if (change.status === 'complete') void refreshAuto();
+});
+chrome.runtime.onMessage.addListener(message => {
+  if (message.action === 'caption-context-changed') {
+    currentTab().then(tab => { if (message.tabId === tab?.id) void refreshAuto(); });
+  }
 });
 void refreshAuto();
 
@@ -80,8 +92,9 @@ for (const button of document.querySelectorAll('[data-action]')) {
     let response;
     const tab = await currentTab();
     try {
-      const top = action.startsWith('captions') && await chrome.tabs.sendMessage(tab.id, { action: 'reading-state' }, { frameId: 0 });
-      response = await chrome.tabs.sendMessage(tab.id, { action }, top?.youtube ? { frameId: 0 } : {});
+      response = action.startsWith('captions')
+        ? await chrome.runtime.sendMessage({ action: 'caption-tab-command', tabId: tab.id, command: action })
+        : await chrome.tabs.sendMessage(tab.id, { action });
     } catch {
       throw new Error(await unavailablePageMessage(tab?.url));
     }

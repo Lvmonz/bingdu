@@ -1,5 +1,5 @@
 (() => {
-  if (!/(^|\.)youtube(?:-nocookie)?\.com$/.test(location.hostname)) return;
+  if (!/(^|\.)youtube(?:-nocookie|education)?\.com$/.test(location.hostname)) return;
   const byteLimit = 2 * 1024 * 1024;
 
   async function readTrack(response) {
@@ -91,7 +91,9 @@
       const timeout = setTimeout(() => controller.abort(), 8000);
       try {
         const before = performance.now();
-        const request = fetch(url.href, { mode: 'same-origin', cache: 'force-cache', redirect: 'error', signal: controller.signal });
+        const sameOrigin = url.origin === location.origin;
+        const request = fetch(url.href, { mode: sameOrigin ? 'same-origin' : 'cors',
+          credentials: sameOrigin ? 'same-origin' : 'omit', cache: 'force-cache', redirect: 'error', signal: controller.signal });
         ownReads.set(url.href, [before - 1, performance.now() + 1]);
         const cues = parseTrack(await readTrack(await request));
         if (cues.length && !stopped && pending === controller && !controller.signal.aborted) {
@@ -119,7 +121,11 @@
         if (own && entry.startTime >= own[0] && entry.startTime <= own[1]) continue;
         let url;
         try { url = new URL(entry.name); } catch { continue; }
-        if (url.origin !== location.origin || url.pathname !== '/api/timedtext' || url.searchParams.get('v') !== videoId) continue;
+        // Privacy-enhanced and education embeds may load their actual caption track
+        // from www.youtube.com. Reuse only the observed URL if CORS permits it.
+        const allowed = url.origin === location.origin || /^\/embed(?:\/|$)/.test(location.pathname) &&
+          url.origin === 'https://www.youtube.com';
+        if (!allowed || url.pathname !== '/api/timedtext' || url.searchParams.get('v') !== videoId) continue;
         if (!latest || entry.startTime >= latest.startTime) latest = { startTime: entry.startTime, url };
       }
       if (!latest) return;

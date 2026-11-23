@@ -5,6 +5,17 @@
   if (!popup && window !== window.top) return;
   const original = { mode: 'original', whole: false, paused: false, incomplete: 0 };
   let state = original;
+  let captionContext;
+  let captionRequest = 0;
+  async function refreshCaptions() {
+    if (popup && !tab?.id) return;
+    const request = ++captionRequest;
+    const result = await chrome.runtime.sendMessage({ action: 'caption-tab-state', tabId: tab?.id }).catch(() => null);
+    if (request === captionRequest && result && !result.error) {
+      captionContext = result;
+      render();
+    }
+  }
   let available = false;
   let siteHidden = false;
   let siteAuto = false;
@@ -209,6 +220,7 @@
     clearTimeout(hoverTimer);
     card.hidden = !open;
     more?.setAttribute('aria-expanded', String(open));
+    if (open) void refreshCaptions();
   }
   function render() {
     const active = state.mode !== 'original';
@@ -219,10 +231,11 @@
       languages.replaceChildren(...choices.map(name => new Option(name, name)), new Option('自定义语言…', ''));
     }
     languages.value = targetLanguage;
-    captionBar.hidden = !state.youtube;
+    const captions = captionContext || state;
+    captionBar.hidden = !(captions.available ?? captions.youtube);
     for (const [key, button] of captionModes) {
       button.disabled = !available || submitting;
-      button.setAttribute('aria-pressed', String(key === (state.captionMode || 'off')));
+      button.setAttribute('aria-pressed', String(key === (captions.captionMode || 'off')));
     }
     primary.textContent = label;
     secondary.textContent = state.mode === 'only' ? '切换双语' : '仅看译文';
@@ -255,9 +268,15 @@
     feedback.textContent = '';
     render();
     try {
-      const response = popup
-        ? await chrome.tabs.sendMessage(tab.id, { action }, action.startsWith('captions') ? {frameId: 0} : {})
-        : await chrome.runtime.sendMessage({ action:'reader-command', command:action });
+      let response;
+      if (action.startsWith('captions')) {
+        response = await chrome.runtime.sendMessage({ action: 'caption-tab-command', command: action, tabId: tab?.id });
+        await refreshCaptions();
+      } else if (popup) {
+        response = await chrome.tabs.sendMessage(tab.id, { action });
+      } else {
+        response = await chrome.runtime.sendMessage({ action: 'reader-command', command: action });
+      }
       if (response?.error) throw new Error(response.error);
       newState(popup ? await chrome.tabs.sendMessage(tab.id, { action:'reading-state' }, { frameId:0 })
                      : globalThis.parallelReading?.getState());
@@ -301,6 +320,7 @@
         siteHidden = (await chrome.storage.local.get(key))[key] === true;
       }
       newState(page);
+      await refreshCaptions();
     } catch { render(); }
     if (!available) {
       const { unavailablePageMessage } = await import('./page-access.js');
@@ -313,8 +333,12 @@
     siteHidden = prefs.hidden;
     targetLanguage = prefs.language;
     newState(globalThis.parallelReading?.getState());
+    await refreshCaptions();
   }
 
+  chrome.runtime.onMessage.addListener(message => {
+    if (message.action === 'caption-context-changed' && (!popup || message.tabId === tab?.id)) void refreshCaptions();
+  });
   render();
   if (popup) {
     chrome.storage.onChanged.addListener((changes, area) => {
