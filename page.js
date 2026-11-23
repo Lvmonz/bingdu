@@ -235,8 +235,14 @@
       }
       if (node instanceof HTMLSlotElement && node.assignedNodes().length) { finish(); return; }
       const appearance = getComputedStyle(node);
-      if (appearance.display === 'none' || appearance.visibility !== 'visible' ||
-          appearance.position === 'absolute' || appearance.position === 'fixed') { finish(); return; }
+      if (appearance.display === 'none' || appearance.visibility !== 'visible') { finish(); return; }
+      if (appearance.position === 'absolute' || appearance.position === 'fixed') {
+        finish();
+        // Embedded readers often put their entire visible document in a
+        // positioned scrollport. Let it own its runs and its viewport.
+        if (discoverChildren && window !== window.top && receivedReadingCommand && node.matches(blocks)) watch(node);
+        return;
+      }
       if (node.tagName === 'BR' || node.tagName === 'WBR') {
         parts.push({ node, source: node.tagName === 'BR' ? '\n' : '', translate: false });
         last = direct;
@@ -1018,6 +1024,7 @@
   });
 
   async function run(action) {
+    const firstManualFrameCommand = window !== window.top && !receivedReadingCommand;
     if (['page', 'dual', 'only', 'all', 'original'].includes(action)) receivedReadingCommand = true;
     if (action === 'reader-settings-changed') htmlCaptions?.refresh();
     if (action === 'reader-settings-changed' && youtubeCaptions) {
@@ -1038,7 +1045,7 @@
         incomplete.clear();
         document.getElementById('pt-notice')?.remove();
         void flush();
-      } else if (mode !== next || whole !== (action === 'all')) start(next, action === 'all');
+      } else if (mode !== next || whole !== (action === 'all') || firstManualFrameCommand) start(next, action === 'all');
     } else if (action === 'original') {
       clear();
     } else if (action === 'input') {

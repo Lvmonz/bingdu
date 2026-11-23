@@ -44,10 +44,12 @@ async function run() {
     });
     const page = await context.newPage();
     const welcomeUrl = 'https://materials.example.test/welcome';
-    const welcome = `<!doctype html><html translate="no" lang="en"><body style="display:flex;flex-direction:column">
-      <div id="App"><h2>Workshop welcome</h2><h4>Time limit: two hours</h4>
+    const welcome = `<!doctype html><html translate="no" lang="en"><style>
+      html, body, #App { height:100%;margin:0 } body { display:flex;flex-direction:column }
+      .frame { position:fixed;inset:0 } .scroll { position:absolute;inset:12px;overflow:auto }
+      </style><body><div id="App"><div class="frame"><main class="scroll"><h2>Workshop welcome</h2><h4>Time limit: two hours</h4>
       <p>Review the instructions before starting.</p><span translate="no">Project ABC</span>
-      <button type="button"><span>Begin workshop</span></button><input value="Personal note"></div></body></html>`;
+      <button type="button"><span>Begin workshop</span></button><input value="Personal note"></main></div></div></body></html>`;
     await page.route(welcomeUrl, route => route.fulfill({contentType:'text/html', body:welcome}));
     await page.route(url, route => route.fulfill({contentType:'text/html', body:html}));
     await page.goto(url);
