@@ -1,80 +1,4 @@
-// Word indices refer to timestamped source tokens; some ASR tokens contain a phrase.
 (() => {
-  function utterances(cues) {
-    const units = [];
-    for (const cue of cues) {
-      const previous = units.at(-1);
-      if (previous?.continues && previous.words && cue.words &&
-          Math.abs(cue.start - previous.end) < 0.05 &&
-          previous.words.length + cue.words.length <= 120 && previous.text.length + cue.text.length <= 720) {
-        previous.words = previous.words.concat(cue.words);
-        previous.text += ' ' + cue.text;
-        previous.end = cue.end;
-        previous.continues = cue.continues;
-      } else units.push({ ...cue });
-    }
-    return units;
-  }
-
-  function encode(unit) {
-    return { duration: Math.round((unit.end - unit.start) * 1000),
-      words: unit.words.map(({text, start}, i) => [i + 1, text, Math.round((start - unit.start) * 1000)]) };
-  }
-
-  function validInput(text, spec) {
-    return Number.isInteger(spec?.duration) && spec.duration > 0 && spec.duration <= 120000 &&
-      Array.isArray(spec.words) && spec.words.length > 0 && spec.words.length <= 160 &&
-      spec.words.every((word, i, words) => Array.isArray(word) && word.length === 3 && word[0] === i+1 &&
-        typeof word[1] === 'string' && word[1].trim() && Number.isInteger(word[2]) &&
-        (i ? word[2] > words[i-1][2] : word[2] === 0) && word[2] < spec.duration) &&
-      spec.words.map(word => word[1]).join(' ') === text;
-  }
-
-  function unfinished(left, right) {
-    if (/[.!?;:]$/.test(left)) return false;
-    const tail = left.toLowerCase().replace(/[,–—]$/, '');
-    if (/\b(?:a|an|the|of|with|between|for|to|and|or|because|not only)$/.test(tail)) return true;
-    if (/^and\b/i.test(right) && /\bbetween\b(?:(?!\band\b).)*$/.test(tail)) return true;
-    return /^for\b/i.test(right) && /\b(?:responsibility|responsible|accountability|accountable)$/.test(tail);
-  }
-
-  function singleComparison(spec) {
-    const text = spec.words.map(w => w[1]).join(' ');
-    // A short sentence built around one comparison loses its point when the
-    // viewer sees the relationship, its first term and its second term separately.
-    return spec.duration <= 10000 && text.length <= 120 && !/[,;:]|\b(?:but|because|although)\b/i.test(text) &&
-      /\b(?:gap|difference|distinction|balance|contrast|choice|relationship) between .+? and .+/i.test(text);
-  }
-
-  function validScreens(spec, screens) {
-    if (!Array.isArray(screens) || !screens.length || screens.length > spec.words.length) return false;
-    if (screens.length > 1 && singleComparison(spec)) return false;
-    let from = 0;
-    for (const screen of screens) {
-      if (!screen || screen.first !== from+1 || !Number.isInteger(screen.last) ||
-          screen.last <= from || screen.last > spec.words.length ||
-          typeof screen.translation !== 'string' || !screen.translation.trim()) return false;
-      const ms = (spec.words[screen.last]?.[2] ?? spec.duration) - spec.words[from][2];
-      const count = [...screen.translation.replace(/\s/g, '')].length;
-      // Prevent flashes and paragraphs. A whole, genuinely short utterance may stay short.
-      const english = spec.words.slice(from, screen.last).map(w => w[1]).join(' ');
-      const next = spec.words[screen.last]?.[1];
-      if (next && unfinished(english,next)) return false;
-      if (screens.length > 1 && (ms < 1500 || screen.last - from < 2) ||
-          count > Math.max(12, Math.min(48, Math.ceil(ms * .010))) ||
-          english.length > 145 && screen.last-from > 1) return false;
-      from = screen.last;
-    }
-    return from === spec.words.length;
-  }
-
-  function mapScreens(unit, screens) {
-    return screens.map(({first,last,translation}) => ({
-      start: unit.words[first-1].start, end: unit.words[last]?.start ?? unit.end,
-      text: unit.words.slice(first-1,last).map(w => w.text).join(' '), translation: translation.trim()
-    }));
-  }
-
   // Align authored target cues with source speech in chronological order. Use the
   // best overlap, or group multiple target cues if they share one indivisible source cue.
   function alignHuman(cues, target) {
@@ -111,5 +35,5 @@
     return paired.some(c => c.end-c.start > 12 || c.text.length > 160 || c.translation.length > 56) ? null : paired;
   }
 
-  globalThis.bingduSubtitleSemantics = {utterances,encode,validInput,singleComparison,validScreens,mapScreens,alignHuman};
+  globalThis.bingduSubtitleSemantics = {alignHuman};
 })();

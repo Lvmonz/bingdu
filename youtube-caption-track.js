@@ -68,44 +68,56 @@
       }
     }
     const cues = [];
-    let begin = 0, clause = -1, length = 0;
-    function emit(stop, continues = false) {
-      const last = words[stop - 1], next = words[stop];
+    const terminal = text => /[.!?…][”"'’)]*$/.test(text) &&
+      !/^(?:mr|mrs|ms|dr|prof|sr|jr|co|inc|etc|st|e\.g|i\.e|(?:[a-z]\.)*[a-z]|\d+)\.$/i.test(text);
+    const punctuated = words.filter(word => terminal(word.text)).length >= 10;
+    const clauseStart = /^(?:and|but|because|which|so|while|when|although|well|okay|yeah|um)$/i;
+    const unfinished = /\b(?:a|an|the|of|for|to|with|between|and|or|not)$/i;
+
+    function emit(from,to) {
+      const last = words[to-1], next = words[to];
       const end = Math.min(last.end, next?.at ?? Infinity, last.at + 1100);
-      if (end > words[begin].at) {
-        const spoken = words.slice(begin, stop);
-        cues.push({ start:words[begin].at / 1000, end:end / 1000, text:spoken.map(word => word.text).join(' '),
-          words:spoken.map(word => ({ text:word.text, start:word.at / 1000 })), continues });
-      }
-      begin = stop;
-      clause = -1;
-      length = 0;
+      const spoken = words.slice(from,to);
+      cues.push({start:spoken[0].at / 1000, end:end / 1000,
+        text:spoken.map(w => w.text).join(' '), words:spoken.map(w => ({text:w.text,start:w.at/1000}))});
     }
-    for (let i = 0; i < words.length; i++) {
-      const word = words[i], next = words[i + 1];
-      length += word.text.length + 1;
-      const abbreviation = /^(?:mr|mrs|ms|dr|prof|sr|jr|e\.g|i\.e|(?:[a-z]\.)*[a-z])\.$/i.test(word.text);
-      const sentenceEnd = !abbreviation && /[.!?…][”"'’)]*$/.test(word.text);
-      if (!next || sentenceEnd || next.at - word.at > 1250 || word.end < next.at || /^>>/.test(next.text)) {
-        emit(i + 1);
-      } else {
-        if (i - begin >= 4 && (/[,;:][”"'’)]*$/.test(word.text) || /^(?:but|because|which|although|while)$/i.test(next.text))) clause = i + 1;
-        if (length >= 120 || next.at - words[begin].at >= 7300) {
-          let stop = clause > begin ? clause : i + 1;
-          // If the hard wrap would orphan the final word(s), move a few words
-          // across the break with them, using the same original word onsets.
-          if (stop === i + 1 && i - begin >= 6 && /[.!?…][”"'’)]*$/.test(next.text)) {
-            stop = i - 2;
-            for (let j = i - 1; j >= Math.max(begin + 3, i - 5); j--) {
-              if (/^(?:what|which|who|when|where|how|because|although|while)$/i.test(words[j].text)) {
-                stop = /^(?:and|or)$/i.test(words[j - 1].text) ? j - 1 : j;
-                break;
-              }
-            }
-          }
-          emit(stop, true);
-          i = stop - 1;
+
+    function splitLong(from,to) {
+      // A punctuated sentence is already a good caption. For long speech, use
+      // the strongest pauses first. Never strand a single final spoken word.
+      const pending = [[from,to]];
+      while (pending.length) {
+        const [first,stop] = pending.pop();
+        if (stop-first <= 17) { emit(first,stop); continue; }
+        let best = 0, cuts = [];
+        for (let i=first+2; i<=stop-2; i++) {
+          if (unfinished.test(words[i-1].text)) continue;
+          const pause = Math.ceil((words[i].at - words[i-1].at) / 100);
+          if (pause > best) { best = pause; cuts = []; }
+          if (pause === best && (!cuts.length || i-cuts.at(-1)>=2)) cuts.push(i);
         }
+        // With regular, equally spaced words there is no acoustic preference.
+        // Take a balanced break rather than issuing one card per tied pause.
+        if (!cuts.length || cuts.length > (stop-first)/5) {
+          const middle = (first+stop)/2;
+          cuts = [cuts.length ? cuts.reduce((x,y)=>Math.abs(x-middle)<=Math.abs(y-middle)?x:y) : Math.floor(middle)];
+        }
+        const breaks = [first,...cuts,stop];
+        for (let i=breaks.length-1;i>0;i--) pending.push([breaks[i-1],breaks[i]]);
+      }
+    }
+
+    let start = 0;
+    for (let i=1;i<=words.length;i++) {
+      const prev = words[i-1], next = words[i];
+      const gap = next ? next.at-prev.at : Infinity;
+      const speaker = next && /^(?:>>|[–—])/.test(next.text);
+      const pause = gap > (punctuated ? 5000 : 1000) || (next && prev.end < next.at);
+      const clause = !punctuated && next && i-start >= 4 && gap > 300 &&
+        clauseStart.test(next.text) && !unfinished.test(prev.text);
+      if (!next || terminal(prev.text) || speaker || pause || clause) {
+        splitLong(start,i);
+        start = i;
       }
     }
     return cues;

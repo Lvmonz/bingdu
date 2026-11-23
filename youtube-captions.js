@@ -214,10 +214,8 @@
       epoch++;
       pending.clear();
       clearTimeout(timer);
-      const semantic = cueInfo.segmented && base(cueInfo.language) === 'en' && base(target) === 'zh';
-      const linguistics = globalThis.bingduSubtitleSemantics;
-      const cards = semantic ? linguistics.utterances(cues) :
-        planner.makeCards(cues, cueInfo.segmented, base(cueInfo.language) === 'en');
+      // Both languages share an immutable source timeline, including when seeking.
+      const cards = cues.map(cue => ({...cue}));
       configureCards(cards);
       const preparing = { cards, done: 0, state: 'loading', controller:new AbortController() };
       plan = preparing;
@@ -231,11 +229,10 @@
         if (trackState.authoredUrl && base(target) === 'zh') {
           const track = await globalThis.bingduReadAuthoredCaption?.(trackState.authoredUrl, mediaId, target, preparing.controller.signal);
           if (cancelled()) return;
-          const aligned = linguistics.alignHuman(cues, track);
+          const aligned = globalThis.bingduSubtitleSemantics.alignHuman(cues, track);
           if (aligned) return aligned;
         }
         return planner.prepare(cards, translate, { title, currentTime: video.currentTime, cancelled,
-          semantic, rate:video.playbackRate || 1,
           progress(done) { preparing.done = done; draw(); } });
       };
       prepareAll().then(ready => {

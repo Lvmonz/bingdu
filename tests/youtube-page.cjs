@@ -71,25 +71,13 @@ async function installOfflineTranslator(context) {
         if (globalThis.holdBatch && entries.some(row => row.text === 'Chapter 21.')) {
           await new Promise(resolve => { globalThis.releaseBatch = resolve; });
         }
-        if (entries[0]?.words) {
-          const utterances = Object.fromEntries(entries.map((row,i) => {
-            const draft = row.draft;
-            let translation = translate(row.text,entries[i-1]?.text);
-            if (row.text === 'We study the river basin.') translation = draft ? '我们研究流域。' : '我们研究流或。';
-            if (row.text === 'Chapter 21.') translation = draft ? '第21章' : '这是第21章';
-            if (row.text === 'Chapter 20.') translation = draft ? '第2章' : '第20章';
-            return [row.id, row.text.startsWith('Chapter') ? [{last:row.words.length,translation}] : translation];
-          }));
-          content = JSON.stringify({utterances});
-        } else {
-          const translations = Object.fromEntries(entries.map((row, i) => {
-            if (row.text === 'Chapter 21.') return [row.id, row.draft ? '第21章' : '这是一段足够长的中文初稿用来验证字幕会按可读时长再精简一次'];
-            if (row.text === 'We study the river basin.') return [row.id, row.draft ? '我们研究流域。' : '我们研究流或。'];
-            if (row.text === 'Chapter 20.') return [row.id, row.draft ? '第2章' : '第20章'];
-            return [row.id, translate(row.text, entries[i - 1]?.text)];
-          }));
-          content = JSON.stringify({ translations });
-        }
+        const translations = Object.fromEntries(entries.map((row, i) => {
+          if (row.text === 'Chapter 21.') return [row.id, row.draft ? '第21章' : '这是一段足够长的中文初稿用来验证字幕会按可读时长再精简一次'];
+          if (row.text === 'We study the river basin.') return [row.id, row.draft ? '我们研究流域。' : '我们研究流或。'];
+          if (row.text === 'Chapter 20.') return [row.id, row.draft ? '第2章' : '第20章'];
+          return [row.id, translate(row.text, entries[i - 1]?.text)];
+        }));
+        content = JSON.stringify({ translations });
       } else {
         content = translate(input);
       }
@@ -246,7 +234,7 @@ async function checkSingleCaptionBox(page) {
   const requests = await worker.evaluate(() => globalThis.subtitleRequests);
   assert.equal(requests.length, count, 'Seeking through a prepared track must make no translation requests');
   assert.ok(requests.some(({input, context}) => input.includes('We study the river basin.') && context.after.startsWith('Chapter') &&
-    JSON.parse(input)[0].words[0][0] === 1));
+    JSON.parse(input)[0].id === 't1' && JSON.parse(input)[0].preferredChars > 0));
   assert.ok(requests.some(({input}) => input.includes('"draft"') && input.includes('Chapter 21.')));
   assert.ok(requests.some(({input}) => input.includes('我们研究流或。')), 'Short drafts must receive the same bilingual review');
   await choose('关闭字幕翻译');
