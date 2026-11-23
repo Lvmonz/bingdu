@@ -78,7 +78,7 @@ async function installOfflineTranslator(context) {
             if (row.text === 'We study the river basin.') translation = draft ? '我们研究流域。' : '我们研究流或。';
             if (row.text === 'Chapter 21.') translation = draft ? '第21章' : '这是第21章';
             if (row.text === 'Chapter 20.') translation = draft ? '第2章' : '第20章';
-            return [row.id,[{first:1,last:row.words.length,translation}]];
+            return [row.id, row.text.startsWith('Chapter') ? [{last:row.words.length,translation}] : translation];
           }));
           content = JSON.stringify({utterances});
         } else {
