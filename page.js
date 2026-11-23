@@ -971,7 +971,7 @@
     notice((await translate([''], { picture }))[0]);
   }
 
-  const captionStops = new Map();
+  let htmlCaptions;
   let youtubeCaptions;
 
   let captionCommand = Promise.resolve();
@@ -979,57 +979,24 @@
     return chrome.runtime.sendMessage({ action: 'caption-language' }).then(value => value?.language || '简体中文');
   }
   async function setCaptions(action) {
-    if (globalThis.bingduYoutubeCaptions) {
-      const mode = action === 'captions' ? (youtubeCaptions ? 'off' : 'dual') : action.slice('captions-'.length);
-      if (mode === 'off') { youtubeCaptions?.stop(); return; }
-      if (youtubeCaptions) { youtubeCaptions.setMode(mode); return; }
+    const session = youtubeCaptions || htmlCaptions;
+    const mode = action === 'captions' ? (session ? 'off' : 'dual') : action.slice('captions-'.length);
+    if (mode === 'off') { session?.stop(); return; }
+    if (session) { session.setMode(mode); return; }
+    if (globalThis.bingduYoutubeCaptions?.isVideoPage()) {
       youtubeCaptions = globalThis.bingduYoutubeCaptions.start(translate, notice, () => {
         youtubeCaptions = null;
         signalState();
       }, mode, await captionLanguage());
       return;
     }
-    if (action !== 'captions') return;
-    if (captionStops.size) {
-      for (const stop of captionStops.values()) stop();
-      captionStops.clear();
-      return;
-    }
-    for (const video of document.querySelectorAll('video')) {
-      const tracks = [...video.textTracks].filter(track => ['captions', 'subtitles'].includes(track.kind));
-      const track = tracks.find(candidate => candidate.mode === 'showing') || tracks[0];
-      if (!track) continue;
-      const oldMode = track.mode;
-      const output = document.createElement('div');
-      output.className = 'pt-translation';
-      output.setAttribute('aria-live', 'polite');
-      video.after(output);
-      let version = 0;
-      const update = async () => {
-        const current = ++version;
-        const raw = [...(track.activeCues || [])].map(cue => cue.text || '').join('\n');
-        const original = raw.replace(/<[^>]*>/g, '').trim();
-        output.hidden = !original;
-        output.textContent = original;
-        if (!original) return;
-        try {
-          const [result] = await translate([original]);
-          if (current === version) output.textContent = original + '\n' + result;
-        } catch (error) {
-          if (current === version) notice(error.message);
-        }
-      };
-      track.mode = 'hidden';
-      track.addEventListener('cuechange', update);
-      void update();
-      captionStops.set(video, () => {
-        version++;
-        track.removeEventListener('cuechange', update);
-        track.mode = oldMode;
-        output.remove();
-      });
-    }
-    if (!captionStops.size) throw new Error('此页面未提供可读取的 HTML5 视频字幕轨');
+    const engine = globalThis.bingduHtml5Captions;
+    const video = engine?.candidate();
+    if (!video) throw new Error('此页面未提供可读取的 HTML5 视频字幕轨');
+    htmlCaptions = engine.start(video, translate, mode, () => {
+      htmlCaptions = null;
+      signalState();
+    }, notice);
   }
 
   document.addEventListener('visibilitychange', () => {
@@ -1041,6 +1008,7 @@
   });
 
   async function run(action) {
+    if (action === 'reader-settings-changed') htmlCaptions?.refresh();
     if (action === 'reader-settings-changed' && youtubeCaptions) {
       const language = await captionLanguage();
       youtubeCaptions?.refresh(language);
@@ -1087,11 +1055,17 @@
 
   function getState() {
     return { mode: mode || 'original', whole: !!mode && whole, paused, incomplete: incomplete.size,
-      youtube: !!globalThis.bingduYoutubeCaptions?.isVideoPage(), captions: !!youtubeCaptions || captionStops.size > 0, captionMode: youtubeCaptions?.mode || 'off' };
+      youtube: !!globalThis.bingduYoutubeCaptions?.isVideoPage(), captions: !!(youtubeCaptions || htmlCaptions), captionMode: (youtubeCaptions || htmlCaptions)?.mode || 'off' };
   }
 
+  let lastCaptionMode = 'off';
   function signalState() {
     globalThis.parallelReadingChanged?.();
+    const next = (youtubeCaptions || htmlCaptions)?.mode || 'off';
+    if (next !== lastCaptionMode) {
+      lastCaptionMode = next;
+      document.dispatchEvent(new Event('bingdu-caption-state-changed'));
+    }
   }
 
   if (globalThis.bingduYoutubeCaptions) document.addEventListener('yt-navigate-finish', signalState);
@@ -1106,6 +1080,8 @@
       reply({ hostname: location.hostname, localFile, site: localFile ? location.href.split(/[?#]/, 1)[0] : location.hostname });
       return;
     }
+    if (!['page', 'dual', 'only', 'original', 'all', 'input', 'selection', 'image', 'reader-settings-changed',
+          'captions', 'captions-dual', 'captions-only', 'captions-off'].includes(action)) return;
     globalThis.parallelReading.run(action).then(() => reply(action?.startsWith('captions') ? { ok: true, captions: getState().captions, captionMode: getState().captionMode } : { ok: true }), error => {
       notice(error.message);
       reply({ error: error.message });

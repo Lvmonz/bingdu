@@ -33,7 +33,8 @@
     {
       "matches": [
         "https://*.youtube.com/*",
-        "https://*.youtube-nocookie.com/*"
+        "https://*.youtube-nocookie.com/*",
+        "https://*.youtubeeducation.com/*"
       ],
       "js": [
         "youtube-caption-source.js"
@@ -51,7 +52,10 @@
       "js": [
         "youtube-caption-track.js",
         "youtube-captions.js",
+        "html5-captions.js",
         "page.js",
+        "caption-frame-client.js",
+        "embed-player-controls.js",
         "reading-controls.js"
       ],
       "css": [

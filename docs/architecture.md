@@ -4,7 +4,8 @@
 | --- | --- | --- |
 | 点击浮球、工具栏或快捷键 | `popup.html`、`panel.js`、`reading-controls.js`、`page-access.js`、`worker.js` | 确定当前标签页和操作。浏览器负责本地文件访问授权。 |
 | 阅读网页 | `page.js`、`page.css` | 找出可阅读单元，随阅读位置分批翻译。切换模式或恢复时处理对应的原始 DOM 节点。 |
-| 观看 YouTube | `youtube-caption-source.js`、`youtube-caption-track.js`、`youtube-captions.js` | 从播放器读取字幕轨或已出现的字幕，按时间渲染在并读字幕框内。页面正文与字幕可分别开关。 |
+| YouTube 字幕 | `youtube-caption-source.js`、`youtube-caption-track.js`、`youtube-captions.js` | 从播放器读取字幕轨或已出现的字幕，按时间渲染在并读字幕框内。页面正文与字幕可分别开关。 |
+| 视频所在页面和播放控件 | `caption-frame-client.js`、`caption-frames.js`、`embed-player-controls.js`、`html5-captions.js` | 子页面向扩展登记 Chrome 分配的文档 ID。浮球、弹窗和侧栏请求操作时，后台询问本标签页的播放器，优先把命令送到正在播放的文档。嵌入播放器自身的菜单只操作本播放器。YouTube 使用专门的字幕读取逻辑，标准 HTML5 视频读取浏览器的定时字幕轨。 |
 | 设置和模型请求 | `panel.html`、`panel.js`、`worker.js` | 浏览器本地存储保存密钥、目标语言、术语和偏好。后台按需把待译文字或图片发送到 DeepSeek。 |
 | 导出本地文档 | `files.js`、`pdf-export.js`、`epub-export.js`、`vendor/` | 本地解析和组成导出文件。扫描 PDF 的页面识别会向 DeepSeek 提交相应页面图像。 |
 | 提交商店更新 | `store/package.py`、`store/release.py`、`store/store_auth.py`、`store/release_platform.py` | 按运行文件清单制包；发版工具从原条目读取版本，记录本次进度，用维护者在本机授予的权限上传和提审。 |

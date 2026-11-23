@@ -15,7 +15,7 @@ def build(root, output, version=None):
     root = root.resolve()
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
     files = {
-        "manifest.json", "files.js", "page-access.js", "panel.js", "panel.css", "popup.css",
+        "manifest.json", "caption-frames.js", "files.js", "page-access.js", "panel.js", "panel.css", "popup.css",
         "epub-export.js", "pdf-export.js", "reading-controls.js",
         "vendor/pdf.mjs", "vendor/pdf.worker.mjs", "vendor/pdf-lib.min.js", "vendor/fflate.mjs",
         "vendor/pdfjs.LICENSE", "vendor/pdf-lib.LICENSE", "vendor/fflate.LICENSE",

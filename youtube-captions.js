@@ -1,11 +1,18 @@
 (() => {
-  if (!/(^|\.)youtube(?:-nocookie)?\.com$/.test(location.hostname)) return;
+  if (!/(^|\.)youtube(?:-nocookie|education)?\.com$/.test(location.hostname)) return;
 
   const windows = '.ytp-caption-window-container, .caption-window';
-  const cc = '.ytp-subtitles-button';
+  const cc = '.ytp-subtitles-button,.ytmClosedCaptioningButtonButton';
   const normalize = text => text.replace(/\s+/gu, ' ').trim();
-  const videoId = () => new URLSearchParams(location.search).get('v') ||
-    location.pathname.match(/^\/(?:shorts|live|embed)\/([^/]+)/)?.[1];
+  const embed = /^\/embed(?:\/|$)/.test(location.pathname);
+  const videoId = () => embed ? 'embed' : new URLSearchParams(location.search).get('v') ||
+    location.pathname.match(/^\/(?:shorts|live)\/([^/]+)/)?.[1];
+
+  function captionButton(player) {
+    // YouTube's newer embedded layout renders controls next to the player.
+    const separate = embed && document.querySelector(':is(#player-control-overlay,#player-controls) :is(' + cc + ')');
+    return separate || player.querySelector(cc);
+  }
 
   function languageCode(name) {
     const known = { '简体中文':'zh-Hans', '繁體中文':'zh-Hant', '中文':'zh', '英语':'en', '日语':'ja', '韩语':'ko', '法语':'fr', '德语':'de', '西班牙语':'es' };
@@ -51,10 +58,13 @@
     let player = visiblePlayer();
     if (!player) throw new Error('请先打开 YouTube 视频并等待播放器加载。');
     let video = player.querySelector('video');
-    let button = player.querySelector(cc);
-    const hasButton = button && !button.disabled && button.getAttribute('aria-disabled') !== 'true' &&
-      button.getClientRects().length && getComputedStyle(button).visibility !== 'hidden';
-    if (!hasButton && !captionLines(player).length) {
+    let button = captionButton(player);
+    const usableButton = control => control && !control.disabled && control.getAttribute('aria-disabled') !== 'true' &&
+      (embed || control.getClientRects().length && getComputedStyle(control).visibility !== 'hidden');
+    const hasButton = usableButton(button);
+    let waitingForCC = embed && !hasButton && !captionLines(player).length &&
+      (video.readyState === 0 || player.classList.contains('unstarted-mode'));
+    if (!hasButton && !waitingForCC && !captionLines(player).length) {
       throw new Error('播放器当前没有可用的字幕（CC）。请确认视频提供字幕，并已开始播放。');
     }
 
@@ -102,6 +112,7 @@
     const events = new AbortController();
     const listen = (target, type, fn) => target.addEventListener(type, fn, { signal: events.signal });
     let stopHints = () => {};
+    let mediaId;
     let peerRoot;
     const peerObserver = new MutationObserver(() => scan());
     function alternateSource() {
@@ -119,7 +130,7 @@
 
     function suppressed() {
       return video.ended || player.matches('.ad-showing,.ad-interrupting') ||
-        player.querySelector(cc)?.getAttribute('aria-pressed') === 'false';
+        captionButton(player)?.getAttribute('aria-pressed') === 'false';
     }
 
     function position() {
@@ -170,6 +181,16 @@
       if (!active) return;
       if (id !== videoId()) { stop(false); return; }
       if (!player.isConnected || !player.contains(video)) return;
+      if (embed) {
+        // Real embedded players create CC and their controls after the first play.
+        const nextButton = captionButton(player);
+        if ((waitingForCC || nextButton !== button) && usableButton(nextButton)) {
+          button = nextButton;
+          if (waitingForCC) requestedCC = button.getAttribute('aria-pressed') === 'false';
+          waitingForCC = false;
+          if (button.getAttribute('aria-pressed') === 'false') button.click();
+        }
+      }
       let rows = suppressed() ? [] : captionLines(player);
       const visible = rows.join(' ');
       const status = trackState.status;
@@ -295,7 +316,7 @@
         if (!el || output.contains(el)) continue;
         if (el === player || el.closest(windows + ',' + cc) ||
             [...record.addedNodes, ...record.removedNodes].some(n => n.nodeType === 1 &&
-              (n.matches(windows + ',video,' + cc) || n.querySelector(windows + ',video')))) {
+              (n.matches(windows + ',video,' + cc) || n.querySelector(windows + ',video,' + cc)))) {
           scan();
           return;
         }
@@ -305,7 +326,7 @@
     const playerTree = new MutationObserver(rebind);
     let videoEvents;
     const sourceChanges = { childList: true, characterData: true, subtree: true, attributes: true,
-      attributeFilter: ['aria-pressed', 'aria-hidden', 'class', 'hidden', 'data-bingdu-captions'] };
+      attributeFilter: ['aria-pressed', 'aria-hidden', 'aria-disabled', 'disabled', 'class', 'hidden', 'data-bingdu-captions'] };
     let ancestry = [];
     function watchLocation() {
       const path = [];
@@ -350,10 +371,11 @@
         waitingForChange = '';
         next.setAttribute('data-bingdu-captions', '');
         next.append(output);
-        observer.observe(next, sourceChanges);
+        observer.observe(embed ? document.documentElement : next, sourceChanges);
         resize.observe(next);
-        button = next.querySelector(cc);
-        if (button?.getAttribute('aria-pressed') === 'false') button.click();
+        button = captionButton(next);
+        requestedCC = button?.getAttribute('aria-pressed') === 'false';
+        if (requestedCC) button.click();
         sendSource('start');
       }
       video = next.querySelector('video');
@@ -376,7 +398,7 @@
       sendSource('stop');
       player.removeAttribute('data-bingdu-captions');
       output.remove();
-      const currentButton = player.querySelector(cc);
+      const currentButton = captionButton(player);
       if (restoreCC && requestedCC && currentButton?.getAttribute('aria-pressed') === 'true') currentButton.click();
       onStop();
     }
@@ -393,6 +415,15 @@
       try { value = JSON.parse(event.detail); } catch { return; }
       if (value?.session !== session || value.videoId !== id || !active) return;
       if (!['pending','ready','same-language','unavailable','unsupported','alternate'].includes(value.status)) return;
+      if (value.mediaId && /^[\w-]{1,64}$/.test(value.mediaId) && value.mediaId !== mediaId) {
+        // A playlist can advance without navigating the iframe or replacing its player.
+        if (mediaId) {
+          waitingForChange = current.join(' ');
+          cache.clear();
+          sourceNotice = '';
+        }
+        followTimeline(value.mediaId);
+      }
       // On a switch, player metadata can update before the previous subtitle disappears.
       if (trackState.status === 'pending' && (value.status === 'ready' || value.status === 'same-language') &&
           (value.switched || (trackState.displayLanguage && base(trackState.displayLanguage) !== base(value.language)))) {
@@ -407,7 +438,7 @@
       reset(); scan();
     }
     listen(document, 'bingdu-youtube-source-state', onSourceState);
-    observer.observe(player, sourceChanges);
+    observer.observe(embed ? document.documentElement : player, sourceChanges);
     resize.observe(player);
     bindVideo();
     listen(document, 'yt-navigate-finish', () => { if (id !== videoId()) stop(false); });
@@ -419,8 +450,15 @@
     handshakeTimer = setTimeout(() => {
       if (active && trackState.status === 'pending') { trackState.status = 'unsupported'; reset(); scan(); }
     }, 10500);
-    sendSource('start');
-    stopHints = globalThis.bingduYoutubeTrackHints?.(id, (timeline, info) => {
+    function followTimeline(nextId) {
+      stopHints();
+      cues = [];
+      hint = {};
+      cueInfo = {};
+      mediaId = nextId;
+      stopHints = globalThis.bingduYoutubeTrackHints?.(mediaId, onTimeline) || (() => {});
+    }
+    function onTimeline(timeline, info) {
       if (!active) return;
       hint = info || {};
       const original = cues.length && !cueInfo.translated && base(cueInfo.language) === base(trackState.language);
@@ -431,7 +469,9 @@
       if (!timeline.length) reset();
       scan();
       if (current.length) schedule();
-    }) || stopHints;
+    }
+    if (!embed) followTimeline(id);
+    sendSource('start');
     scan();
     return { stop, refresh, setMode, get mode() { return mode; } };
   }
