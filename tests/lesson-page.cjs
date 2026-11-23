@@ -43,6 +43,12 @@ async function run() {
       };
     });
     const page = await context.newPage();
+    const welcomeUrl = 'https://materials.example.test/welcome';
+    const welcome = `<!doctype html><html translate="no" lang="en"><body style="display:flex;flex-direction:column">
+      <div id="App"><h2>Workshop welcome</h2><h4>Time limit: two hours</h4>
+      <p>Review the instructions before starting.</p><span translate="no">Project ABC</span>
+      <button type="button"><span>Begin workshop</span></button><input value="Personal note"></div></body></html>`;
+    await page.route(welcomeUrl, route => route.fulfill({contentType:'text/html', body:welcome}));
     await page.route(url, route => route.fulfill({contentType:'text/html', body:html}));
     await page.goto(url);
     const original = await page.locator('#lesson-main-content').innerHTML();
@@ -93,6 +99,38 @@ async function run() {
     await page.locator('#lesson-main-content iframe').evaluate(frame => frame.remove());
     assert.equal(await page.locator('#lesson-main-content').innerHTML(), original);
     assert.equal(await page.locator('#lp-footer a span').textContent(), 'Next');
+    // A document-level language hint applies to auto mode. A reader can
+    // explicitly enable the frame even when it is mounted after their click.
+    await worker.evaluate(() => chrome.storage.local.set({autoSites:['course.example.test']}));
+    await page.reload();
+    await page.locator('h2').filter({hasText:/译Please note/}).waitFor();
+    const addWelcome = () => page.locator('#lesson-main-content').evaluate((el, src) => {
+      const frame = document.createElement('iframe');
+      frame.src = src;
+      frame.style.cssText = 'width:100%;height:350px';
+      el.prepend(frame);
+    }, welcomeUrl);
+    const welcomeFrame = page.frameLocator('#lesson-main-content iframe');
+    await addWelcome();
+    await welcomeFrame.getByRole('heading', {name:'Workshop welcome', exact:true}).waitFor();
+    assert.equal(await welcomeFrame.locator('pt-dual').count(),0);
+    await command('仅看译文');
+    const verifyWelcome = async () => {
+      await welcomeFrame.getByRole('heading', {name:'译Workshop welcome', exact:true}).waitFor({timeout:6000});
+      await welcomeFrame.getByRole('button', {name:'译Begin workshop', exact:true}).waitFor({timeout:6000});
+      assert.equal(await welcomeFrame.locator('[translate=no]:not(html)').innerText(),'Project ABC');
+      assert.equal(await welcomeFrame.locator('input').inputValue(),'Personal note');
+      assert.equal(await welcomeFrame.locator('html').getAttribute('translate'),'no');
+    };
+    await verifyWelcome();
+    await page.locator('#lesson-main-content iframe').evaluate(el => el.remove());
+    await addWelcome();
+    await verifyWelcome();
+    await command('切换双语');
+    await welcomeFrame.locator('h2 pt-dual').filter({hasText:'译Workshop welcome'}).waitFor();
+    await command('恢复原文');
+    await welcomeFrame.getByRole('button', {name:'Begin workshop',exact:true}).waitFor();
+    assert.equal(await welcomeFrame.locator('pt-dual').count(),0);
     console.log('Lesson content, fixed navigation, scrolling, bilingual mode and restoration passed.');
   } finally {
     await context?.close();

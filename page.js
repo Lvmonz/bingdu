@@ -2,11 +2,13 @@
   const localFile = location.protocol === 'file:';
   if (localFile && (!['text/html', 'application/xhtml+xml'].includes(document.contentType) || location.pathname.endsWith('/'))) return;
   const blocks = 'body,main,article,section,div,p,h1,h2,h3,h4,h5,h6,li,blockquote,figcaption,dt,dd,td,th,caption,summary,address,aside,figure,header';
-  const hardExclusions = 'script,style,noscript,template,pre,textarea,select,input,[contenteditable]:not([contenteditable="false"]),[translate="no"],.notranslate,.pt-translation,#pt-notice,pt-reading-tools';
+  const documentHint = '[translate="no" i]';
+  const hardExclusions = 'script,style,noscript,template,pre,textarea,select,input,[contenteditable]:not([contenteditable="false"]),:not(:root)[translate="no" i],.notranslate,.pt-translation,#pt-notice,pt-reading-tools';
   const generalExclusions = hardExclusions + ',button,[role="button"],[role="toolbar"],nav,[role="navigation"],footer';
   const navigation = [
     ':is(nav,[role="navigation"],[role="menubar"],[role="menu"],[role="tablist"]) :is(a[href],button,[role="link"],[role="button"])',
     '.sj-page-lesson :is(#header,#lp-footer) :is(a,button,[role="link"],[role="button"],.header-link)',
+    ':root[translate="no" i] button',
     '[role="tab"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"]'
   ].join(',');
   // Skilljar positions the lesson's own scrollport outside normal document flow.
@@ -146,6 +148,7 @@
   }
 
   function excludedHost(host) {
+    if (respectDocumentHint()) return true;
     if (youtubePage) return excludedAcrossRoots(host, youtubeExcluded + ',' + temporarilyHidden);
     return excludedAcrossRoots(host, (host.matches(navigation) ? hardExclusions + ',' + temporarilyHidden : excluded) + ',' + media + ',' + protectedText);
   }
@@ -518,7 +521,7 @@
   }
 
   function discover(root) {
-    if (root.nodeType !== Node.ELEMENT_NODE || root.closest(hardExclusions)) return;
+    if (respectDocumentHint() || root.nodeType !== Node.ELEMENT_NODE || root.closest(hardExclusions)) return;
     if (youtubePage) {
       if (root.closest(youtubeExcluded)) return;
       // Both renderer generations can nest one label inside another (a legacy
@@ -1051,8 +1054,14 @@
     }
   }
 
+  // An explicit reading command applies to the visible document, including a
+  // frame mounted later. Automatic translation still follows the root hint.
+  function respectDocumentHint() {
+    return !receivedReadingCommand && document.documentElement.matches(documentHint);
+  }
+
   document.addEventListener('pointerover', event => {
-    if (!event.altKey || !(event.target instanceof Element)) return;
+    if (!event.altKey || respectDocumentHint() || !(event.target instanceof Element)) return;
     const node = event.target.closest(blocks);
     if (!node || event.target.closest(excluded + ',' + media) || node === document.body) return;
     if (event.relatedTarget instanceof Node && node.contains(event.relatedTarget)) return;
@@ -1083,7 +1092,7 @@
     if (action === 'reading-mode-for-child' && window === window.top) {
       // A child can finish loading while the top document is still reading its preferences.
       initialReading.then(() => {
-        if (mode) reply(whole ? 'all' : mode);
+        if (mode) reply({ command: whole ? 'all' : mode, manual: receivedReadingCommand });
         else reply(receivedReadingCommand ? 'original' : null);
       });
       return true;
@@ -1106,8 +1115,11 @@
   });
 
   const initialReading = chrome.runtime.sendMessage({ action: 'preferences' })
-    .then(command => {
+    .then(preference => {
+      const command = preference?.command ?? preference;
       if (receivedReadingCommand || !['dual', 'only', 'all'].includes(command)) return;
+      receivedReadingCommand = preference?.manual === true;
+      if (respectDocumentHint()) return;
       start(command === 'only' ? 'only' : 'dual', command === 'all');
       signalState();
     })
