@@ -163,7 +163,13 @@ def run(store, root, data, desktop):
                 if digest(build(root, Path(tmp), last)) == current["sha256"]:
                     print(f"运行文件与已经提交的 {last} 相同。", DASHBOARD)
                     return
-        base = max([FIRST_UPLOAD, *versions, *([last] if last else [])], key=version_key)
+        known_versions = [*versions]
+        if last:
+            known_versions.append(last)
+        if not known_versions:
+            # The API may confirm the item but omit both revision fields on a fresh computer.
+            known_versions.append(manifest["version"])
+        base = max(FIRST_UPLOAD, *known_versions, key=version_key)
         version = max(next_version(base), manifest["version"], key=version_key)
         archive = build(root, data, version)
         current = {"version": version, "sha256": digest(archive), "root": str(root)}
@@ -254,11 +260,15 @@ def main(argv=None):
             store.status()
             print("Google 授权成功，已验证并读原条目。")
         elif args.status:
-            versions = revisions(store.status())
-            for version, state in sorted(versions.items(), key=lambda item: version_key(item[0])):
-                print(f"并读 {version}：{STATE_NAMES.get(state, state)}。")
-            if not versions:
-                print("商店未返回已发布或已提交的版本。")
+            status = store.status()
+            if not any(status.get(key) for key in ("publishedItemRevisionStatus", "submittedItemRevisionStatus")):
+                print("已确认并读原条目。Google 此次未返回版本或审核状态，当前是否在审请到商店后台核对。")
+            for key, label in (("publishedItemRevisionStatus", "已发布记录"), ("submittedItemRevisionStatus", "提交记录")):
+                record = status.get(key)
+                if record:
+                    state = record.get("state", "状态未返回")
+                    numbers = [entry["crxVersion"] for entry in record.get("distributionChannels", []) if entry.get("crxVersion")]
+                    print(f"{label}（{'、'.join(numbers) or '版本号未返回'}）：{STATE_NAMES.get(state, state)}。")
             print(DASHBOARD)
         else:
             run(store, ROOT, data, args.output or output_directory(ROOT))

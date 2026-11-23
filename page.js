@@ -31,7 +31,7 @@
     'yt-content-metadata-view-model .ytContentMetadataViewModelMetadataTextMaxLines2',
     'ytd-comment-view-model ytd-expander #content', '#content-text',
     'ytd-transcript-segment-renderer .segment-text', '.ytTranscriptSegmentViewModelSegmentText',
-    'ytd-guide-entry-renderer #endpoint #title', 'ytd-mini-guide-entry-renderer #label',
+    'ytd-guide-entry-renderer #endpoint :is(#title,yt-formatted-string.title)', 'ytd-mini-guide-entry-renderer #label',
     'yt-chip-cloud-chip-renderer #text', 'yt-tab-shape .yt-tab-shape-wiz__tab', 'yt-tab-shape [role="tab"]',
     'ytd-shelf-renderer #title', 'ytd-rich-shelf-renderer #title', '.ytShelfHeaderLayoutTitle',
     'ytm-slim-video-metadata-renderer h1',
@@ -44,6 +44,9 @@
     'ytd-live-chat-frame,yt-live-chat-app,ytd-ad-slot-renderer,ytd-promoted-sparkles-web-renderer,ad-slot-renderer,' +
     'ytd-comment-simplebox-renderer,[role="textbox"],.ytp-tooltip,.ytp-caption-segment';
   const youtubeExcluded = [hardExclusions, media, protectedText, youtubeWidgets].join(',');
+  const youtubeLocales = { '简体中文': 'zh-Hans', '繁體中文': 'zh-Hant', '繁体中文': 'zh-Hant',
+    '英语': 'en', '日语': 'ja', '韩语': 'ko', '法语': 'fr', '德语': 'de', '西班牙语': 'es' };
+  let youtubeTarget;
   const outputs = new Map();
   const seen = new Set();
   const queue = new Set();
@@ -102,12 +105,17 @@
   let observedShadows = new WeakSet();
 
   function treeParent(node) {
-    return node.parentElement || node.getRootNode().host;
+    if (node.parentElement) return node.parentElement;
+    const root = node.getRootNode();
+    // A detached anchor is its own root and its .host is a URL hostname.
+    return root instanceof ShadowRoot ? root.host : null;
   }
 
   function excludedAcrossRoots(element, selector) {
-    for (let root = element; root; root = root.getRootNode().host) {
-      if (root.closest(selector)) return true;
+    for (let current = element; current;) {
+      if (current.closest(selector)) return true;
+      const root = current.getRootNode();
+      current = root instanceof ShadowRoot ? root.host : null;
     }
     return false;
   }
@@ -164,6 +172,19 @@
     const comment = host.matches('ytd-expander #content,#content-text') && host.closest('ytd-expander');
     const anchor = preview || (comment && host.closest('#content')) || last;
     return [{ parts, last, host, layout: false, youtube: true, anchor, preview: !!preview, comment: !!comment }];
+  }
+
+  function localizedYoutubeGuide(host, target) {
+    // YouTube localizes its built-in guide routes. The page locale says nothing
+    // about video titles, subscriptions, comments or the user's own playlists.
+    const guide = host.closest('ytd-guide-entry-renderer,ytd-mini-guide-entry-renderer');
+    const link = guide?.querySelector('a[href]');
+    if (!link || !/^\/(?:$|shorts\/?$|feed\/)/.test(link.pathname)) return false;
+    try {
+      const source = new Intl.Locale(document.documentElement.lang).maximize();
+      const wanted = new Intl.Locale(youtubeLocales[target] || target).maximize();
+      return source.language === wanted.language && source.script === wanted.script;
+    } catch { return false; }
   }
 
   // Read contiguous inline content inside its existing layout item. Nested blocks and
@@ -526,6 +547,8 @@
   async function translateRuns(runs, current) {
     let texts = [], targets = [], groups = [];
     let size = 0;
+    const targetLanguage = youtubePage ? await youtubeTarget : '';
+    if (current !== generation) return;
     async function send() {
       if (!texts.length || current !== generation) return;
       const translated = await translate(texts, { purpose: 'page', groups });
@@ -533,6 +556,11 @@
       texts = []; targets = []; groups = []; size = 0;
     }
     for (const [index, run] of runs.entries()) {
+      if (run.youtube && localizedYoutubeGuide(run.host, targetLanguage)) {
+        for (const part of run.parts) if (part.translate) part.value = part.source;
+        run.unchanged = true;
+        continue;
+      }
       for (const part of run.parts) {
         if (!part.translate) continue;
         part.result = [];
@@ -549,6 +577,7 @@
     await send();
     if (current !== generation) return;
     for (const run of runs) {
+      if (run.unchanged) continue;
       for (const part of run.parts) {
         if (!part.translate) continue;
         if (part.result.includes(null)) run.incomplete = true;
@@ -865,6 +894,8 @@
     mode = next;
     whole = entire;
     paused = initiallyPaused;
+    if (youtubePage) youtubeTarget = chrome.runtime.sendMessage({ action: 'caption-language' })
+      .then(settings => settings?.language || '').catch(() => '');
     if (!whole) setupObservers();
     mutations.observe(document.documentElement, observerOptions);
     for (const host of displayed) {

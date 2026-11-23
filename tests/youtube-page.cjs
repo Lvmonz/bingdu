@@ -13,12 +13,13 @@ const words = {
   'Listen to the birds.': '听听鸟鸣。',
   'Coastal walks': '海滨漫步',
   'Island trails': '海岛小径',
+  'An original cue': '一条原声字幕',
 };
 
 // An offline watch page with nested application components, a clipped card title,
 // and a comment loaded below the fold. The sample prose and markup are synthetic.
 const fixture = `<!doctype html>
-<html lang="en"><meta charset="utf-8"><title>Video</title>
+<html lang="zh-CN"><meta charset="utf-8"><title>Video</title>
 <style>
   body { margin: 0; font: 18px/1.3 system-ui; }
   ytd-app, ytd-watch-flexy, ytd-watch-metadata, yt-lockup-view-model,
@@ -31,7 +32,10 @@ const fixture = `<!doctype html>
   #gap { height: 3500px; }
 </style>
 <body><ytd-app><ytd-watch-flexy>
+  <ytd-guide-entry-renderer><a id="endpoint" href="/"><span id="title">首页</span></a></ytd-guide-entry-renderer>
   <div id="movie_player" class="html5-video-player">
+    <video width="240" height="90"></video>
+    <button class="ytp-subtitles-button" aria-pressed="true">CC</button>
     <div class="ytp-caption-window-container"><span class="ytp-caption-segment">An original cue</span></div>
     <button class="ytp-play-button">Resume playback</button>
   </div>
@@ -76,6 +80,42 @@ async function expectText(page, selector, source, mode = 'dual') {
   }, { selector, source, target, mode }, { timeout: 10000 }).catch(error => {
     throw new Error(`${mode}: expected "${source}" in ${selector}`, { cause: error });
   });
+}
+
+// Exercise the extension's normal controls while YouTube rebuilds the CC layer.
+async function checkSingleCaptionBox(page) {
+  await page.locator('#movie_player').evaluate(player => {
+    const track = { languageCode: 'en', vssId: '.en' };
+    player.getVideoData = () => ({ video_id: 'fixture' });
+    player.getPlayerResponse = () => ({ videoDetails: { videoId: 'fixture', defaultAudioLanguage: 'en' } });
+    player.getOption = (_module, setting) => setting === 'tracklist' ? [track] : track;
+  });
+  async function choose(label) {
+    const button = page.getByRole('button', { name: label, exact: true });
+    if (!await button.isVisible()) await page.getByRole('button', { name: '并读 · 更多操作', exact: true }).click();
+    await button.click();
+  }
+  await choose('双语字幕');
+  await expectText(page, '.pt-youtube-caption', 'An original cue');
+  const samples = await page.evaluate(async () => {
+    const player = document.querySelector('#movie_player');
+    const observations = [];
+    for (let i = 0; i < 12; i++) {
+      const native = player.querySelector('.ytp-caption-window-container');
+      native.replaceWith(native.cloneNode(true));
+      await new Promise(resolve => requestAnimationFrame(resolve));
+      const style = getComputedStyle(player.querySelector('.ytp-caption-window-container'));
+      observations.push(style.visibility === 'hidden' && player.querySelectorAll('.pt-youtube-caption:not([hidden])').length === 1);
+    }
+    return observations;
+  });
+  assert.ok(samples.every(Boolean), 'A rebuilt native caption layer must stay hidden on every sampled frame');
+  await choose('仅译文字幕');
+  await page.waitForFunction(() => document.querySelector('.pt-caption-source').hidden &&
+    document.querySelector('.pt-caption-target').textContent === '一条原声字幕');
+  await choose('关闭字幕翻译');
+  await page.waitForFunction(() => !document.querySelector('.pt-youtube-caption') &&
+    getComputedStyle(document.querySelector('.ytp-caption-window-container')).visibility === 'visible');
 }
 
 async function run() {
@@ -126,6 +166,8 @@ async function run() {
     assert.equal(await page.evaluate(() => window.followedLink), '/watch?v=next');
     assert.equal(await page.locator('.ytp-caption-segment').innerText(), 'An original cue');
     assert.equal(await page.locator('.ytp-play-button').innerText(), 'Resume playback');
+    assert.equal(await page.locator('ytd-guide-entry-renderer').innerText(), '首页');
+    await checkSingleCaptionBox(page);
 
     await page.evaluate(() => {
       const comment = document.createElement('ytd-comment-view-model');
@@ -153,8 +195,9 @@ async function run() {
     });
     await expectText(page, result, 'Island trails');
     assert.equal((await page.locator(result).textContent()).includes(words['Coastal walks']), false);
-    await page.getByRole('button', { name: '并读 · 更多操作', exact: true }).click();
-    await page.getByRole('button', { name: '仅看译文', exact: true }).click();
+    const onlyMode = page.getByRole('button', { name: '仅看译文', exact: true });
+    if (!await onlyMode.isVisible()) await page.getByRole('button', { name: '并读 · 更多操作', exact: true }).click();
+    await onlyMode.click();
     await expectText(page, result, 'Island trails', 'only');
     await page.getByRole('button', { name: '并读 · 恢复原文', exact: true }).click();
     await expectText(page, result, 'Island trails', 'original');

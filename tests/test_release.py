@@ -104,6 +104,37 @@ class ReleaseTests(unittest.TestCase):
         self.assertFalse(self.output.exists())
         self.assertFalse((self.state / "release.json").exists())
 
+    def test_clean_computer_advances_checkout_when_store_only_identifies_item(self):
+        self.store.remote = {"itemId": release.ITEM, "name": release.RESOURCE, "publicKey": "test"}
+        self.invoke()
+        self.assertEqual(self.store.incoming, "0.4.5")
+        self.assertEqual(self.store.calls, ["upload", "publish"])
+
+    def test_explicit_higher_checkout_version_is_used_when_store_returns_version(self):
+        self.store.remote = {"publishedItemRevisionStatus": revision("0.4.1", "PUBLISHED")}
+        manifest = self.root / "manifest.json"
+        value = json.loads(manifest.read_text(encoding="utf-8"))
+        value["version"] = "0.5.0"
+        manifest.write_text(json.dumps(value), encoding="utf-8")
+        self.invoke()
+        self.assertEqual(self.store.incoming, "0.5.0")
+
+    def test_status_identifies_missing_state_without_inferring_queue(self):
+        self.store.remote = {"itemId": release.ITEM, "name": release.RESOURCE, "publicKey": "test"}
+        message, _ = self.invoke(["--status"])
+        self.assertIn("未返回版本或审核状态", message)
+        self.assertIn(release.DASHBOARD, message)
+        self.assertEqual(self.store.calls, [])
+
+    def test_status_can_report_review_even_without_version(self):
+        self.store.remote = {"submittedItemRevisionStatus": {"state": "PENDING_REVIEW"}}
+        message, _ = self.invoke(["--status"])
+        self.assertIn("待 Google 审核", message)
+        self.assertIn("版本号未返回", message)
+        self.assertNotIn("未返回版本或审核状态", message)
+        self.invoke()
+        self.assertEqual(self.store.calls, [])
+
     def test_interrupted_upload_continues_from_equivalent_moved_checkout(self):
         self.store.processing = True
         self.store.remote["lastAsyncUploadState"] = "IN_PROGRESS"

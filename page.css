@@ -14,7 +14,7 @@ pt-dual.pt-yt-dual {
 }
 /* YouTube clips the source heading itself. Give both languages room while
    retaining the original link, typography, and width of its card. */
-:is(h1,h2,h3,h4,a,#video-title,.metadata-snippet-text,.metadata-snippet-container,.metadata-snippet-container-one-line):has(> .pt-yt-dual),
+:is(h1,h2,h3,h4,a,#video-title,.ytContentMetadataViewModelMetadataTextMaxLines2,.metadata-snippet-text,.metadata-snippet-container,.metadata-snippet-container-one-line):has(> .pt-yt-dual),
 :is(a#video-title,h3.title-and-badge,.metadata-snippet-container,.metadata-snippet-container-one-line):has(.pt-yt-dual) {
   -webkit-line-clamp: unset !important;
   max-height: none !important;

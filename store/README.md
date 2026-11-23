@@ -27,6 +27,8 @@
 | 自动升版、打包、上传和提审 | `python3 -X utf8 store/release.py` | 产物默认放在系统桌面；无桌面时使用仓库的 `dist`。可追加 `--output "目标目录"`。 |
 | 测试发版工具 | `python3 -X utf8 -m unittest discover -s tests -p "test_release*.py"` | 在临时目录用模拟商店与模拟授权回调验证流程，全程使用测试数据。 |
 
-脚本从商店返回的版本和本机上次版本选择基准，自动递增末位；如果源码版本已经更高，就沿用源码版本。若条目已有待审核或待发布版本，脚本显示状态并保留队列。上传过程断网时，用同一台电脑重新运行可恢复上次进度。更换源码路径后，只要该次打包内容一致，也能继续。请依次在不同电脑发版，Google 的上传和提交分两次请求，提交作用于条目上当时的草稿。[上传与提交 API](https://developer.chrome.com/docs/webstore/api/reference/rest/v2/publishers.items)
+有已知版本时，脚本取 Google 返回的版本和本机上次发版记录中的较高值，递增末位。如果源码清单已手工升到更高版本，就沿用该版本。新电脑首次运行时，Google 有时只返回条目标识。此时脚本把当前检出清单中的版本当作已用版本并递增，例如从 `0.4.4` 升到 `0.4.5`。
+
+如果 Google 返回待审核或待发布状态，脚本会保留现有队列。如果 `--status` 只收到条目标识，终端会提示去商店后台核对，因为这次响应无法判断是否在审。上传过程断网时，用同一台电脑重新运行可恢复上次进度。更换源码路径后，只要该次打包内容一致，也能继续。请依次在不同电脑发版，Google 的上传和提交分两次请求，提交作用于条目上当时的草稿。[上传与提交 API](https://developer.chrome.com/docs/webstore/api/reference/rest/v2/publishers.items)
 
 本机进度和发版备份 ZIP 在 macOS 的 `~/Library/Application Support/并读/商店发版`、Windows 的 `%LOCALAPPDATA%\Bingdu\ChromeWebStore`，以及 Linux 的 `$XDG_STATE_HOME/Bingdu/ChromeWebStore`（默认 `~/.local/state/Bingdu/ChromeWebStore`）。在新电脑发起发版时会重新查询商店。不同电脑的本地草稿进度各自保存。

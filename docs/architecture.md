@@ -13,5 +13,5 @@
 
 - 翻译接口是 `https://api.deepseek.com/chat/completions`，模型配置在 `worker.js`。扫描识别接口是 `https://api.deepseek.com/v1/tools/ocr`。阅读者向 DeepSeek 获取并管理自己的密钥，在并读设置里保存。用量和费用取决于该账号和服务商的计费规则。
 - 网页的阅读偏好按站点或本地文件保存，字幕和网页翻译在浏览器中显示。隐私政策列出实际处理的数据种类和接收方。[隐私政策](../store/隐私政策.md)
-- 商店 API 使用专用 Google Cloud 项目的桌面客户端。新电脑需要维护者持有客户端配置、登录有原条目权限的账号并授权。持久授权使用系统凭据库，ZIP 和中断续传记录由当地操作系统的用户目录保存。审核和商店分发由 Google 管理。[Google 官方发布接口](https://developer.chrome.com/docs/webstore/using-api)
+- 商店 API 使用专用 Google Cloud 项目的桌面客户端。新电脑需要维护者持有客户端配置、登录有原条目权限的账号并授权。持久授权使用系统凭据库，ZIP 和中断续传记录由本机操作系统的用户目录保存。审核和商店分发由 Google 管理。[Google 官方发布接口](https://developer.chrome.com/docs/webstore/using-api)
 - GitHub Actions 使用本地测试页面和模拟服务测试并生成包。只有维护者显式运行发版入口才会访问商店提交更新。
