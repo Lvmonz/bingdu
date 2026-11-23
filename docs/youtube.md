@@ -28,4 +28,6 @@
 
 在两门公开课的真实视频上验证了双语、仅译文和关闭恢复。前者使用隐私增强嵌入且 CC 原先关闭，后者使用普通嵌入且 CC 原先开启。验证读取真实英语字幕，使用固定模型回复核对画面。沉浸式翻译 1.35.4 在同一门 Claude Academy 课程上也实际显示了双语。[Claude Academy 课程](https://academy.claude.com/zh-CN/courses/ai-fluency-framework-foundations/introduction-to-ai-fluency) · [Anthropic Skilljar 课程](https://anthropic-partners.skilljar.com/path/claude-fde/ai-capabilities-and-limitations)
 
+带逐词时间的英文自动字幕会按句末标点、停顿和长句中的分句重新断句。并读把每段作为一个翻译单位，附上视频标题和可用的前后文。在《Introduction to AI Fluency》里，从 0:22 播放到 0:25，可以看到跨越两个原始字幕窗口的课程术语出现在同一句里。手工字幕沿用作者的时间轴。[视频 0:22](https://www.youtube.com/watch?v=JpGtOfSgR-c&t=22s)
+
 仓库的隔离浏览器测试还覆盖了教育版域名、多层嵌入、延迟挂载的 CC 按钮、多视频选择、移除后重建和动态添加的标准字幕轨。各平台私有字幕接口需要分别适配。能否翻译具体视频，取决于该视频实际提供的字幕。[内嵌视频回归](../tests/youtube-embeds.cjs)

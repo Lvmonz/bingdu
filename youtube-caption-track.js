@@ -1,6 +1,21 @@
 (() => {
   if (!/(^|\.)youtube(?:-nocookie|education)?\.com$/.test(location.hostname)) return;
+  if (typeof PerformanceObserver === 'undefined') return;
   const byteLimit = 2 * 1024 * 1024;
+  // YouTube can clear resource timings before the reader opens the subtitle
+  // menu. Remember only recent caption requests; fetch only in an active session.
+  const recentTracks = new Map();
+  const subscribers = new Set();
+  const timings = new PerformanceObserver(list => {
+    const entries = list.getEntries().filter(entry => entry.name.includes('/api/timedtext'));
+    for (const { name, startTime } of entries) {
+      recentTracks.delete(name);
+      recentTracks.set(name, { name, startTime });
+      if (recentTracks.size > 16) recentTracks.delete(recentTracks.keys().next().value);
+    }
+    if (entries.length) for (const notify of subscribers) notify(entries);
+  });
+  timings.observe({ type: 'resource', buffered: true });
 
   async function readTrack(response) {
     if (!response.ok || !response.body || Number(response.headers.get('Content-Length')) > byteLimit) return '';
@@ -29,8 +44,62 @@
     return value.split(':').reduce((total, part) => total * 60 + Number(part), 0);
   }
 
-  function parseTrack(raw) {
+  // ASR display windows overlap to keep earlier words on screen. Word offsets,
+  // unlike window end times, describe when each part of the utterance begins.
+  function speechCues(events) {
+    const words = [];
+    for (const { start, duration, segments } of events) {
+      if (!Number.isFinite(start) || start < 0 || !Number.isFinite(duration) || duration <= 0 || duration > 120000) return [];
+      for (const segment of segments) {
+        const text = typeof segment.text === 'string' ? segment.text.trim() : '';
+        if (!text) continue;
+        const at = start + (segment.offset ?? 0);
+        const previous = words.at(-1);
+        if (!Number.isFinite(at) || at < start || at >= start + duration || at < (previous?.at ?? 0)) return [];
+        const suffix = /^[.,!?;:%)\]]|^['’](?:s|re|ll|ve|d|t|m)\b/i.test(text);
+        if (previous && (at === previous.at || suffix && at <= previous.end)) {
+          previous.text += (suffix ? '' : ' ') + text;
+          previous.end = Math.max(previous.end, start + duration);
+          continue;
+        }
+        words.push({ text, at, end: start + duration });
+      }
+    }
     const cues = [];
+    let begin = 0, clause = -1, length = 0;
+    function emit(stop) {
+      const last = words[stop - 1], next = words[stop];
+      const end = Math.min(last.end, next?.at ?? Infinity, last.at + 1100);
+      if (end > words[begin].at) cues.push({ start:words[begin].at / 1000, end:end / 1000,
+        text:words.slice(begin, stop).map(word => word.text).join(' ') });
+      begin = stop;
+      clause = -1;
+      length = 0;
+    }
+    for (let i = 0; i < words.length; i++) {
+      const word = words[i], next = words[i + 1];
+      length += word.text.length + 1;
+      const abbreviation = /^(?:mr|mrs|ms|dr|prof|sr|jr|e\.g|i\.e|(?:[a-z]\.)*[a-z])\.$/i.test(word.text);
+      const sentenceEnd = !abbreviation && /[.!?…][”"'’)]*$/.test(word.text);
+      if (!next || sentenceEnd || next.at - word.at > 1250 || word.end < next.at || /^>>/.test(next.text)) {
+        emit(i + 1);
+      } else {
+        if (i - begin >= 4 && (/[,;:][”"'’)]*$/.test(word.text) || /^(?:but|because|which|although|while)$/i.test(next.text))) clause = i + 1;
+        if (length >= 120 || next.at - words[begin].at >= 7300) {
+          const stop = clause > begin ? clause : i + 1;
+          emit(stop);
+          i = stop - 1;
+        }
+      }
+    }
+    return cues;
+  }
+
+  function parseTrack(raw, info) {
+    const cues = [];
+    const speech = [];
+    const segmentEnglish = info.automatic && !info.translated && /^en(?:-|$)/i.test(info.language);
+    let wordTimed = false;
     function add(start, duration, source) {
       const text = source.replace(/\s+/gu, ' ').trim();
       if (Number.isFinite(start) && start >= 0 && duration > 0 && duration <= 120 && text && text.length <= 1000) {
@@ -42,10 +111,14 @@
       const events = JSON.parse(data).events;
       if (!Array.isArray(events) || events.length > 20000) return [];
       for (const event of events) {
-        if (Array.isArray(event?.segs) && Number.isFinite(event.tStartMs) && !event.aAppend) {
-          add(event.tStartMs / 1000, event.dDurationMs / 1000,
-            event.segs.map(seg => typeof seg?.utf8 === 'string' ? seg.utf8 : '').join(''));
-        }
+        if (!Array.isArray(event?.segs) || !Number.isFinite(event.tStartMs)) continue;
+        const text = event.segs.map(seg => typeof seg?.utf8 === 'string' ? seg.utf8 : '').join('');
+        if (!text.trim()) continue;
+        add(event.tStartMs / 1000, event.dDurationMs / 1000, text);
+        if (!segmentEnglish) continue;
+        wordTimed ||= event.segs.some(seg => Number.isFinite(seg?.tOffsetMs) && seg.tOffsetMs > 0);
+        speech.push({ start:event.tStartMs, duration:event.dDurationMs,
+          segments:event.segs.map(seg => ({text:seg?.utf8, offset:seg?.tOffsetMs})) });
       }
     } else if (data.startsWith('<') && !/<!DOCTYPE/i.test(data)) {
       const doc = new DOMParser().parseFromString(data, 'application/xml');
@@ -55,7 +128,17 @@
       if (rows.length > 20000) return [];
       for (const row of rows) {
         for (const br of row.querySelectorAll('br')) br.replaceWith('\n');
-        if (format === 'timedtext') add(Number(row.getAttribute('t')) / 1000, Number(row.getAttribute('d')) / 1000, row.textContent);
+        if (format === 'timedtext') {
+          const start = Number(row.getAttribute('t')), duration = Number(row.getAttribute('d'));
+          add(start / 1000, duration / 1000, row.textContent);
+          if (segmentEnglish && row.textContent.trim()) {
+            const spans = [...row.querySelectorAll('s')];
+            wordTimed ||= spans.some(span => Number(span.getAttribute('t')) > 0);
+            speech.push({ start, duration, segments:spans.length ? spans.map(span => ({
+              text:span.textContent, offset:Number(span.getAttribute('t'))
+            })) : [{text:row.textContent}] });
+          }
+        }
         else add(Number(row.getAttribute('start')), Number(row.getAttribute('dur')), row.textContent);
       }
     } else if (/^WEBVTT(?:\s|$)/.test(data)) {
@@ -71,11 +154,15 @@
         if (cues.length > 20000) return [];
       }
     }
+    if (wordTimed) {
+      const sentences = speechCues(speech);
+      if (sentences.length) { info.segmented = true; return sentences; }
+    }
     return cues.sort((a, b) => a.start - b.start);
   }
 
   globalThis.bingduYoutubeTrackHints = function (videoId, onCues) {
-    if (!videoId || typeof PerformanceObserver === 'undefined') return () => {};
+    if (!videoId) return () => {};
     let track = '';
     let latestStart = -1;
     let lastUrl = '';
@@ -95,10 +182,11 @@
         const request = fetch(url.href, { mode: sameOrigin ? 'same-origin' : 'cors',
           credentials: sameOrigin ? 'same-origin' : 'omit', cache: 'force-cache', redirect: 'error', signal: controller.signal });
         ownReads.set(url.href, [before - 1, performance.now() + 1]);
-        const cues = parseTrack(await readTrack(await request));
+        const info = trackInfo(url);
+        const cues = parseTrack(await readTrack(await request), info);
         if (cues.length && !stopped && pending === controller && !controller.signal.aborted) {
           loaded = true;
-          onCues(cues, trackInfo(url));
+          onCues(cues, info);
         }
       } catch {
         // Optional lookahead. Transient, empty or unsupported responses use visible captions.
@@ -109,7 +197,8 @@
     }
 
     function trackInfo(url) {
-      return { language: url.searchParams.get('lang') || '', translated: url.searchParams.get('tlang') || '' };
+      return { language: url.searchParams.get('lang') || '', translated: url.searchParams.get('tlang') || '',
+        automatic: url.searchParams.get('kind') === 'asr' || /^a\./.test(url.searchParams.get('vssId') || '') };
     }
 
     function observe(entries) {
@@ -150,11 +239,11 @@
       void load(url, pending);
     }
 
-    const observer = new PerformanceObserver(list => observe(list.getEntries()));
-    observer.observe({ type: 'resource', buffered: true });
+    subscribers.add(observe);
+    observe(recentTracks.values());
     return () => {
       stopped = true;
-      observer.disconnect();
+      subscribers.delete(observe);
       pending?.abort();
       ownReads.clear();
     };

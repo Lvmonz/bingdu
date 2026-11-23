@@ -14,6 +14,8 @@ const words = {
   'Coastal walks': '海滨漫步',
   'Island trails': '海岛小径',
   'An original cue': '一条原声字幕',
+  'We study the river basin.': '我们研究流域。',
+  'It feeds the lake.': '它为湖泊供水。',
 };
 
 // An offline watch page with nested application components, a clipped card title,
@@ -55,7 +57,15 @@ async function installOfflineTranslator(context) {
       if (String(url) !== 'https://api.deepseek.com/chat/completions') throw Error('Unexpected endpoint');
       const request = JSON.parse(options.body);
       const input = request.messages.at(-1).content;
-      const translate = text => dictionary[text.trim()] || '其他测试译文';
+      if (request.messages.length === 3) {
+        globalThis.subtitleRequests ||= [];
+        globalThis.subtitleRequests.push({ input, context:JSON.parse(request.messages[1].content).subtitleContext });
+      }
+      const translate = text => {
+        if (text === 'It feeds the lake.' && request.messages.length === 3 &&
+            JSON.parse(request.messages[1].content).subtitleContext.before === text) return '它为这座湖泊供水。';
+        return dictionary[text.trim()] || '其他测试译文';
+      };
       let content;
       if (request.response_format) {
         const translations = Object.fromEntries(JSON.parse(input).map(row => [row.id, translate(row.text)]));
@@ -116,6 +126,44 @@ async function checkSingleCaptionBox(page) {
   await choose('关闭字幕翻译');
   await page.waitForFunction(() => !document.querySelector('.pt-youtube-caption') &&
     getComputedStyle(document.querySelector('.ytp-caption-window-container')).visibility === 'visible');
+
+  // Each ASR window stays painted into the next. The second window ends
+  // one sentence and begins another. Preload it before the reader enables CC.
+  const trackUrl = 'https://www.youtube.com/api/timedtext?v=fixture&kind=asr&lang=en&fmt=json3';
+  const events = [
+    {tStartMs:22000,dDurationMs:4500,segs:[{utf8:'We'},{utf8:' study',tOffsetMs:240},{utf8:' the',tOffsetMs:920}]},
+    {tStartMs:23000,dDurationMs:4000,segs:[{utf8:'river'},{utf8:' basin.',tOffsetMs:500},
+      {utf8:' It',tOffsetMs:1600},{utf8:' feeds',tOffsetMs:1800}]},
+    {tStartMs:25000,dDurationMs:4000,segs:[{utf8:'the'},{utf8:' lake.',tOffsetMs:400}]},
+    {tStartMs:26100,dDurationMs:2000,segs:[{utf8:'It'},{utf8:' feeds',tOffsetMs:200},{utf8:' the lake.',tOffsetMs:500}]}
+  ];
+  await page.route(trackUrl, route => route.fulfill({contentType:'application/json',body:JSON.stringify({events})}));
+  await page.evaluate(async url => { await (await fetch(url)).text(); }, trackUrl);
+  async function seek(seconds) {
+    await page.locator('video').evaluate((video, t) => {
+      video.currentTime = t;
+      video.dispatchEvent(new Event('timeupdate'));
+    }, seconds);
+  }
+  await seek(22.2);
+  await choose('双语字幕');
+  await expectText(page, '.pt-youtube-caption', 'We study the river basin.');
+  await seek(23.8);
+  assert.equal(await page.locator('.pt-caption-source').textContent(), 'We study the river basin.');
+  await seek(24.7);
+  await expectText(page, '.pt-youtube-caption', 'It feeds the lake.');
+  await seek(26.4);
+  await page.waitForFunction(() => document.querySelector('.pt-caption-target')?.textContent === '它为这座湖泊供水。');
+  await seek(32);
+  await page.locator('.pt-youtube-caption').waitFor({state:'hidden'});
+  await seek(22.4);
+  await choose('仅译文字幕');
+  await expectText(page, '.pt-caption-target', 'We study the river basin.', 'only');
+  assert.ok(await page.locator('.pt-caption-source').isHidden());
+  const [worker] = page.context().serviceWorkers();
+  const requests = await worker.evaluate(() => globalThis.subtitleRequests);
+  assert.ok(requests.some(({input, context}) => input.includes('We study the river basin.') && context.after === 'It feeds the lake.'));
+  await choose('关闭字幕翻译');
 }
 
 async function run() {

@@ -41,12 +41,16 @@
       !segment.closest('[hidden],[aria-hidden="true"],.ytp-caption-window-top:has(.ytp-caption-segment svg)'));
   }
   function captionLines(player) {
-    const rows = new Map();
+    const groups = new Map();
     for (const segment of dialogueSegments(player)) {
-      const row = segment.closest('.caption-visual-line,.caption-window') || segment.parentElement;
+      const window = segment.closest('.caption-window,.ytp-caption-window-container');
+      if (!groups.has(window)) groups.set(window, new Map());
+      const rows = groups.get(window);
+      const row = segment.closest('.caption-visual-line') || window;
       rows.set(row, (rows.get(row) || '') + segment.textContent);
     }
-    return [...new Set([...rows.values()].map(normalize).filter(text => text && text.length <= 1200))];
+    return [...new Set([...groups.values()].map(rows => normalize([...rows.values()].join(' ')))
+      .filter(text => text && text.length <= 1200))];
   }
 
   function visiblePlayer() {
@@ -100,6 +104,7 @@
     let active = true;
     let epoch = 0;
     let current = [];
+    let currentCueStart;
     let cues = [];
     let timer;
     let blockedUntil = 0;
@@ -140,7 +145,9 @@
     function draw() {
       const original = current.join(' ');
       const parts = current.map(line => {
-        if (cache.has(line)) return cache.get(line);
+        const key = captionKey(line);
+        if (cache.has(key)) return cache.get(key);
+        if (cueInfo.segmented) return '';
         for (let cut = line.lastIndexOf(' '); cut >= 4; cut = line.lastIndexOf(' ', cut - 1)) {
           const prefix = line.slice(0, cut);
           if (cache.has(prefix)) return cache.get(prefix);
@@ -157,6 +164,7 @@
     function reset() {
       epoch++;
       current = [];
+      currentCueStart = undefined;
       pending.clear();
       blockedUntil = 0;
       firstChange = 0;
@@ -202,18 +210,21 @@
       }
       // Keep the original transcript on a native language change. It is tied
       // to this video and remains usable even while YouTube repaints its CC.
-      if (!suppressed() && cues.length && !cueInfo.translated && base(cueInfo.language) &&
-          base(cueInfo.language) === base(trackState.language)) {
+      const originalTrack = cues.length && !cueInfo.translated && base(cueInfo.language) &&
+        base(cueInfo.language) === base(trackState.language);
+      let cueStart;
+      if (!suppressed() && originalTrack) {
         const timed = cuesAt(video.currentTime);
-        if (timed.length) {
+        if (timed.length || cueInfo.segmented) {
           rows = [...new Set(timed.map(cue => cue.text))];
+          if (cueInfo.segmented) cueStart = timed[0]?.start;
           waitingForChange = '';
           source = true;
           passthrough = sameLanguage(cueInfo.language, target);
         }
       }
       const peer = !suppressed() && alternateSource();
-      if (peer?.length && (!rows.length || status === 'unavailable' || status === 'unsupported')) {
+      if (peer?.length && !(originalTrack && cueInfo.segmented) && (!rows.length || status === 'unavailable' || status === 'unsupported')) {
         rows = peer;
         source = true;
         passthrough = sameLanguage(trackState.language, target) || (!trackState.language && targetScript(peer.join(' '), target));
@@ -224,7 +235,8 @@
         current = [];
         draw();
       }
-      if (rows.length === current.length && rows.every((line, i) => line === current[i])) return;
+      if (currentCueStart === cueStart && rows.length === current.length && rows.every((line, i) => line === current[i])) return;
+      currentCueStart = cueStart;
       current = rows;
       draw();
       if (rows.length) {
@@ -256,17 +268,37 @@
       return cues.slice(low, low + 4).filter(cue => cue.start <= t + 12).map(cue => cue.text);
     }
 
+    function cueIndex(line, future) {
+      const low = nextCue(video.currentTime);
+      const from = future ? low : Math.max(0, low - 4);
+      const to = future ? Math.min(cues.length, low + 4) : low;
+      for (let i = from; i < to; i++) {
+        if (cues[i].text === line && (future || cues[i].end > video.currentTime)) return i;
+      }
+      return -1;
+    }
+    function captionKey(line, future = false) {
+      const index = cueInfo.segmented ? cueIndex(line, future) : -1;
+      return index < 0 ? line : JSON.stringify([cues[index].start, line]);
+    }
     async function request(lines, speculative) {
       const generation = epoch;
+      const keys = lines.map(line => captionKey(line, speculative));
+      const first = cueIndex(lines[0], speculative), last = cueIndex(lines.at(-1), speculative);
+      const context = {
+        title: document.title.replace(/\s*[-–]\s*YouTube\s*$/i, '').slice(0, 180),
+        before: first > 0 ? cues[first - 1].text : '',
+        after: last >= 0 ? cues[last + 1]?.text || '' : ''
+      };
       running++;
-      lines.forEach(line => pending.add(line));
+      keys.forEach(key => pending.add(key));
       try {
-        const values = await translate(lines);
+        const values = await translate(lines, { purpose:'subtitle', context });
         if (!active || generation !== epoch) return;
         lines.forEach((line, i) => {
           if (!values[i]) return;
           if (cache.size >= 300) cache.delete(cache.keys().next().value);
-          cache.set(line, values[i]);
+          cache.set(keys[i], values[i]);
         });
         scan();
         if (active) draw();
@@ -282,18 +314,21 @@
         }
       } finally {
         running--;
-        if (generation === epoch) lines.forEach(line => pending.delete(line));
+        if (generation === epoch) keys.forEach(key => pending.delete(key));
         if (active && current.length) schedule(Math.max(80, blockedUntil - Date.now()));
       }
     }
     function pump() {
       if (!active || !current.length || showNativeAsTarget || suppressed() || running >= 2 || Date.now() < blockedUntil) return;
       firstChange = 0;
-      const missing = lines => [...new Set(lines)].filter(line => !cache.has(line) && !pending.has(line));
+      const missing = (lines, future = false) => [...new Set(lines)].filter(line => {
+        const key = captionKey(line, future);
+        return !cache.has(key) && !pending.has(key);
+      });
       const needed = missing(current);
       if (needed.length) void request(needed.slice(0, 6), false);
       if (running < 2 && cues.length && usingSource && !cueInfo.translated && (!trackState.language || base(trackState.language) === base(cueInfo.language))) {
-        const future = missing(upcoming());
+        const future = missing(upcoming(), true);
         if (future.length) void request(future, true);
       }
     }
