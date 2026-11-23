@@ -66,9 +66,23 @@
     return '';
   }
 
+  function authoredTarget(player, code) {
+    if (family(code || '') !== 'zh') return '';
+    const tracks = player?.getPlayerResponse?.()?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+    const wanted = new Intl.Locale(code).maximize().script;
+    const match = tracks.filter(t => {
+      const lang = language(t.languageCode);
+      return family(lang) === 'zh' && !auto(t) && !translated(t) && t.kind !== 'forced' &&
+        typeof t.baseUrl === 'string' && t.baseUrl.length < 12000 &&
+        (code === 'zh' || new Intl.Locale(lang).maximize().script === wanted);
+    }).sort((a,b) => Number(b.languageCode === code) - Number(a.languageCode === code))[0];
+    return match?.baseUrl || '';
+  }
+
   function state(s, status, track) {
     s.status = status;
     const detail = JSON.stringify({ session: s.session, videoId: s.videoId, mediaId: s.mediaId || '', status,
+      authoredUrl: status === 'ready' ? s.authoredUrl : '',
       language: s.source || '', displayLanguage: display(track), switched: !!s.switched });
     if (s.last === detail || active !== s) return;
     s.last = detail;
@@ -138,6 +152,11 @@
       s.deadline = Date.now() + 8000;
     }
     s.player = p;
+    if (s.mediaId !== mediaId || s.authoredFor !== s.target || s.authoredPlayer !== p) {
+      s.authoredFor = s.target;
+      s.authoredPlayer = p;
+      s.authoredUrl = authoredTarget(p, s.target);
+    }
     s.mediaId = mediaId;
     const track = current(p);
     s.current = track;
@@ -164,6 +183,7 @@
 
     const response = p.getPlayerResponse?.();
     const renderer = response?.captions?.playerCaptionsTracklistRenderer;
+    if (!s.authoredUrl && renderer?.captionTracks?.length) s.authoredUrl = authoredTarget(p, s.target);
     const list = p.getOption('captions', 'tracklist', { includeAsr: true });
     const tracks = Array.isArray(list) && list.length ? list : renderer?.captionTracks || [];
     const originalTracks = tracks.filter(t => language(t?.languageCode) && !translated(t) && t.kind !== 'forced');

@@ -6,8 +6,10 @@
   // menu. Remember only recent caption requests; fetch only in an active session.
   const recentTracks = new Map();
   const subscribers = new Set();
+  const authoredReads = new Map();
   const timings = new PerformanceObserver(list => {
-    const entries = list.getEntries().filter(entry => entry.name.includes('/api/timedtext'));
+    const entries = list.getEntries().filter(entry => entry.name.includes('/api/timedtext') &&
+      !(authoredReads.has(entry.name) && Math.abs(entry.startTime - authoredReads.get(entry.name)) < 50));
     for (const { name, startTime } of entries) {
       recentTracks.delete(name);
       recentTracks.set(name, { name, startTime });
@@ -175,6 +177,29 @@
     return cues.sort((a, b) => a.start - b.start);
   }
 
+  function allowedTrack(url, videoId) {
+    return (url.origin === location.origin ||
+      /^\/embed(?:\/|$)/.test(location.pathname) && url.origin === 'https://www.youtube.com') &&
+      !url.username && !url.password && url.pathname === '/api/timedtext' && url.searchParams.get('v') === videoId;
+  }
+
+  globalThis.bingduReadAuthoredCaption = async function (address, videoId, target, signal) {
+    try {
+      const url = new URL(address);
+      const lang = url.searchParams.get('lang') || '';
+      if (!allowedTrack(url, videoId) || !/^zh(?:-|$)/i.test(lang) ||
+          target !== 'zh' && new Intl.Locale(lang).maximize().script !== new Intl.Locale(target).maximize().script ||
+          ['tlang','sq','seq','live'].some(field => url.searchParams.has(field)) ||
+          ['asr','forced'].includes(url.searchParams.get('kind')) || /^a\./.test(url.searchParams.get('vssId') || '')) return [];
+      if (authoredReads.size >= 16) authoredReads.delete(authoredReads.keys().next().value);
+      authoredReads.set(url.href, performance.now());
+      const same = url.origin === location.origin;
+      const response = await fetch(url, {mode:same ? 'same-origin' : 'cors', credentials:same ? 'same-origin' : 'omit',
+        redirect:'error', cache:'force-cache', signal:AbortSignal.any([signal,AbortSignal.timeout(4500)])});
+      return parseTrack(await readTrack(response), {language:lang});
+    } catch { return []; }
+  };
+
   globalThis.bingduYoutubeTrackHints = function (videoId, onCues) {
     if (!videoId) return () => {};
     let track = '';
@@ -226,9 +251,7 @@
         try { url = new URL(entry.name); } catch { continue; }
         // Privacy-enhanced and education embeds may load their actual caption track
         // from www.youtube.com. Reuse only the observed URL if CORS permits it.
-        const allowed = url.origin === location.origin || /^\/embed(?:\/|$)/.test(location.pathname) &&
-          url.origin === 'https://www.youtube.com';
-        if (!allowed || url.pathname !== '/api/timedtext' || url.searchParams.get('v') !== videoId) continue;
+        if (!allowedTrack(url, videoId)) continue;
         if (!latest || entry.startTime >= latest.startTime) latest = { startTime: entry.startTime, url };
       }
       if (!latest) return;

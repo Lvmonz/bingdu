@@ -196,6 +196,7 @@
       }
     }
     function discardPlan(resume = true) {
+      plan?.controller.abort();
       plan = undefined;
       output.style.removeProperty('--pt-source-height');
       output.style.removeProperty('--pt-target-height');
@@ -213,9 +214,12 @@
       epoch++;
       pending.clear();
       clearTimeout(timer);
-      const cards = planner.makeCards(cues, cueInfo.segmented, base(cueInfo.language) === 'en');
+      const semantic = cueInfo.segmented && base(cueInfo.language) === 'en' && base(target) === 'zh';
+      const linguistics = globalThis.bingduSubtitleSemantics;
+      const cards = semantic ? linguistics.utterances(cues) :
+        planner.makeCards(cues, cueInfo.segmented, base(cueInfo.language) === 'en');
       configureCards(cards);
-      const preparing = { cards, done: 0, state: 'loading' };
+      const preparing = { cards, done: 0, state: 'loading', controller:new AbortController() };
       plan = preparing;
       if (!video.paused && !video.ended) {
         heldVideo = video;
@@ -223,10 +227,21 @@
       }
       const cancelled = () => !active || plan !== preparing || id !== videoId();
       const title = document.title.replace(/\s*[-–]\s*YouTube\s*$/i, '').slice(0, 180);
-      planner.prepare(cards, translate, { title, currentTime: video.currentTime, cancelled,
-        progress(done) { preparing.done = done; draw(); } }).then(() => {
+      const prepareAll = async () => {
+        if (trackState.authoredUrl && base(target) === 'zh') {
+          const track = await globalThis.bingduReadAuthoredCaption?.(trackState.authoredUrl, mediaId, target, preparing.controller.signal);
+          if (cancelled()) return;
+          const aligned = linguistics.alignHuman(cues, track);
+          if (aligned) return aligned;
+        }
+        return planner.prepare(cards, translate, { title, currentTime: video.currentTime, cancelled,
+          semantic, rate:video.playbackRate || 1,
+          progress(done) { preparing.done = done; draw(); } });
+      };
+      prepareAll().then(ready => {
         if (cancelled()) return;
-        configureCards(cards);
+        preparing.cards = ready;
+        configureCards(ready);
         preparing.state = 'ready';
         reserveTrackRows();
         draw();
@@ -560,7 +575,7 @@
     }
     function setMode(next) { mode = next; draw(); }
     function onSourceState(event) {
-      if (typeof event.detail !== 'string' || event.detail.length > 1500) return;
+      if (typeof event.detail !== 'string' || event.detail.length > 16000) return;
       let value;
       try { value = JSON.parse(event.detail); } catch { return; }
       if (value?.session !== session || value.videoId !== id || !active) return;
@@ -579,6 +594,7 @@
           (value.switched || (trackState.displayLanguage && base(trackState.displayLanguage) !== base(value.language)))) {
         waitingForChange = nativeAtStart;
       }
+      if (plan && value.authoredUrl !== trackState.authoredUrl) discardPlan();
       trackState = value;
       if (value.status !== 'pending') clearTimeout(handshakeTimer);
       if (value.status === 'unavailable' && sourceNotice !== value.status) {

@@ -163,12 +163,16 @@
     return best;
   }
 
-  async function prepare(cards, translate, { title, currentTime, cancelled, progress }) {
+  async function prepare(cards, translate, { title, currentTime, cancelled, progress, semantic = false, rate = 1 }) {
+    const languagePlan = globalThis.bingduSubtitleSemantics;
+    const mapped = new Map();
     const batches = [];
+    const maxItems = semantic ? 8 : 16;
+    const maxChars = semantic ? 1000 : 2400;
     for (let i = 0; i < cards.length;) {
       const from = i;
       let chars = 0;
-      while (i < cards.length && i - from < 16 && (i === from || chars + cards[i].text.length <= 2400)) {
+      while (i < cards.length && i - from < maxItems && (i === from || chars + cards[i].text.length <= maxChars)) {
         chars += cards[i++].text.length;
       }
       batches.push([from, i]);
@@ -186,6 +190,11 @@
           context: { title, before: cards[from - 1]?.text || '', after: cards[to]?.text || '' } };
         try {
           const texts = slice.map(card => card.text);
+          if (semantic) {
+            options.purpose = 'subtitle-semantics';
+            options.wordTiming = slice.map(languagePlan.encode);
+            options.playbackRate = rate;
+          }
           let response;
           try { response = await translate(texts, options); }
           catch (error) {
@@ -195,9 +204,29 @@
             response = await translate(texts, options);
           }
           if (cancelled() || failed) return;
-          if (!Array.isArray(response) || response.length !== slice.length ||
+          if (semantic) {
+            const fallback = [];
+            for (const [j,unit] of slice.entries()) {
+              const screens = response?.[j];
+              if (languagePlan.validScreens(options.wordTiming[j], screens)) {
+                mapped.set(unit, languagePlan.mapScreens(unit, screens));
+              } else {
+                // Keep a readable utterance intact if the service gave unusable indices.
+                const parts = unit.text.length <= 145 && unit.end-unit.start <= 10 ? [{...unit}] : splitEnglish(unit);
+                mapped.set(unit, parts);
+                fallback.push(...parts);
+              }
+            }
+            if (fallback.length) {
+              configureWindows(fallback, true, rate, Infinity);
+              await prepare(fallback, translate, {title,currentTime,cancelled:()=>failed || cancelled(),progress:()=>{}});
+              if (cancelled() || failed) return;
+            }
+          } else {
+            if (!Array.isArray(response) || response.length !== slice.length ||
               response.some(value => typeof value !== 'string' || !value.trim())) throw Error('部分字幕缺少译文');
-          slice.forEach((card, j) => { card.translation = response[j]; });
+            slice.forEach((card, j) => { card.translation = response[j]; });
+          }
           done += slice.length;
           progress(done);
         } catch (error) {
@@ -207,6 +236,7 @@
       }
     }
     await Promise.all([run(), run()]);
+    if (!cancelled()) return semantic ? cards.flatMap(unit => mapped.get(unit)) : cards;
   }
 
   globalThis.bingduYoutubeCaptionPlan = { makeCards, configureWindows, prepare, atTime, chineseLines, lineCount };
