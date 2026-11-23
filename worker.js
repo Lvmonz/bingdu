@@ -118,6 +118,10 @@ async function translate({ texts, language, picture, purpose, groups }) {
 }
 
 function dispatch(tabId, action, frameId = 0) {
+  if (action === 'page') {
+    return chrome.tabs.sendMessage(tabId, { action: 'reading-state' }, { frameId: 0 })
+      .then(state => chrome.tabs.sendMessage(tabId, { action: state.mode === 'original' ? 'dual' : 'original' }));
+  }
   return chrome.tabs.sendMessage(tabId, { action }, { frameId });
 }
 
@@ -147,6 +151,15 @@ chrome.storage.onChanged.addListener((changes, area) => {
 function readingSite(url) {
   const page = new URL(url);
   return page.protocol === 'file:' ? page.href.split(/[?#]/, 1)[0] : page.hostname;
+}
+
+async function initialReadingMode(sender) {
+  if (sender.frameId > 0) {
+    const inherited = await dispatch(sender.tab.id, 'reading-mode-for-child').catch(() => null);
+    if (inherited) return inherited;
+  }
+  const { autoSites } = await chrome.storage.local.get({ autoSites: [] });
+  return autoSites.includes(readingSite(sender.url)) ? 'dual' : 'original';
 }
 
 function panelSection(request) {
@@ -211,8 +224,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     return true;
   }
   if (message.action === 'preferences' && sender.tab) {
-    const site = readingSite(sender.url);
-    chrome.storage.local.get({ autoSites: [] }).then(({ autoSites }) => reply(autoSites.includes(site)));
+    initialReadingMode(sender).then(reply, () => reply('original'));
     return true;
   }
   if (message.action !== 'translate') return;

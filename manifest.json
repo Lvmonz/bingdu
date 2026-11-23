@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "并读 · 双语网页与文档翻译",
-  "version": "0.4.5",
+  "version": "0.4.8",
   "description": "在原网页逐段对照阅读，翻译扫描 PDF，导出双语 EPUB。使用自己的 DeepSeek API 密钥。",
   "permissions": [
     "storage",
@@ -61,6 +61,7 @@
       "css": [
         "page.css"
       ],
+      "match_about_blank": true,
       "all_frames": true
     }
   ],

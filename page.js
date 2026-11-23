@@ -2,9 +2,17 @@
   const localFile = location.protocol === 'file:';
   if (localFile && (!['text/html', 'application/xhtml+xml'].includes(document.contentType) || location.pathname.endsWith('/'))) return;
   const blocks = 'body,main,article,section,div,p,h1,h2,h3,h4,h5,h6,li,blockquote,figcaption,dt,dd,td,th,caption,summary,address,aside,figure,header';
-  const hardExclusions = 'script,style,noscript,template,pre,textarea,select,input,[contenteditable]:not([contenteditable="false"]),[translate="no"],.notranslate,.pt-translation,#pt-notice,pt-reading-tools';
+  const documentHint = '[translate="no" i]';
+  const hardExclusions = 'script,style,noscript,template,pre,textarea,select,input,[contenteditable]:not([contenteditable="false"]),:not(:root)[translate="no" i],.notranslate,.pt-translation,#pt-notice,pt-reading-tools';
   const generalExclusions = hardExclusions + ',button,[role="button"],[role="toolbar"],nav,[role="navigation"],footer';
-  const navigation = ':is(nav,[role="navigation"],[role="menubar"],[role="menu"],[role="tablist"]) :is(a[href],button,[role="link"],[role="button"]),[role="tab"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"]';
+  const navigation = [
+    ':is(nav,[role="navigation"],[role="menubar"],[role="menu"],[role="tablist"]) :is(a[href],button,[role="link"],[role="button"])',
+    '.sj-page-lesson :is(#header,#lp-footer) :is(a,button,[role="link"],[role="button"],.header-link)',
+    ':root[translate="no" i] button',
+    '[role="tab"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"]'
+  ].join(',');
+  // Skilljar positions the lesson's own scrollport outside normal document flow.
+  const readingRoots = navigation + ',#lesson-body #lesson-main-content';
   // Keep site-specific chrome outside the document's reading flow.
   const siteExclusions = [
     ['youtube.com', '.ytp-caption-window-container,.caption-window,.ytp-caption-segment'],
@@ -72,6 +80,7 @@
   let viewWidth = window.innerWidth;
   let viewHeight = window.innerHeight;
   let mode = '';
+  let receivedReadingCommand = false;
   let whole = false;
   let generation = 0;
   const runningBatches = new Map();
@@ -139,6 +148,7 @@
   }
 
   function excludedHost(host) {
+    if (respectDocumentHint()) return true;
     if (youtubePage) return excludedAcrossRoots(host, youtubeExcluded + ',' + temporarilyHidden);
     return excludedAcrossRoots(host, (host.matches(navigation) ? hardExclusions + ',' + temporarilyHidden : excluded) + ',' + media + ',' + protectedText);
   }
@@ -225,8 +235,14 @@
       }
       if (node instanceof HTMLSlotElement && node.assignedNodes().length) { finish(); return; }
       const appearance = getComputedStyle(node);
-      if (appearance.display === 'none' || appearance.visibility !== 'visible' ||
-          appearance.position === 'absolute' || appearance.position === 'fixed') { finish(); return; }
+      if (appearance.display === 'none' || appearance.visibility !== 'visible') { finish(); return; }
+      if (appearance.position === 'absolute' || appearance.position === 'fixed') {
+        finish();
+        // Embedded readers often put their entire visible document in a
+        // positioned scrollport. Let it own its runs and its viewport.
+        if (discoverChildren && window !== window.top && receivedReadingCommand && node.matches(blocks)) watch(node);
+        return;
+      }
       if (node.tagName === 'BR' || node.tagName === 'WBR') {
         parts.push({ node, source: node.tagName === 'BR' ? '\n' : '', translate: false });
         last = direct;
@@ -247,7 +263,7 @@
       if (discoverChildren && !observedShadows.has(shadow)) {
         observedShadows.add(shadow);
         mutations.observe(shadow, observerOptions);
-        for (const label of shadow.querySelectorAll(navigation)) watch(label);
+        for (const unit of shadow.querySelectorAll(readingRoots)) watch(unit);
       }
       for (const child of shadow.childNodes) visit(child, child);
       finish();
@@ -511,7 +527,7 @@
   }
 
   function discover(root) {
-    if (root.nodeType !== Node.ELEMENT_NODE || root.closest(hardExclusions)) return;
+    if (respectDocumentHint() || root.nodeType !== Node.ELEMENT_NODE || root.closest(hardExclusions)) return;
     if (youtubePage) {
       if (root.closest(youtubeExcluded)) return;
       // Both renderer generations can nest one label inside another (a legacy
@@ -523,8 +539,8 @@
       }
       return;
     }
-    if (root.matches(navigation)) watch(root);
-    for (const label of root.querySelectorAll(navigation)) watch(label);
+    if (root.matches(readingRoots)) watch(root);
+    for (const unit of root.querySelectorAll(readingRoots)) watch(unit);
     if (root.closest(excluded)) return;
     // Unpack nested blocks when their container reaches the reading range.
     // New inline nodes belong to their nearest existing reading unit.
@@ -1008,6 +1024,8 @@
   });
 
   async function run(action) {
+    const firstManualFrameCommand = window !== window.top && !receivedReadingCommand;
+    if (['page', 'dual', 'only', 'all', 'original'].includes(action)) receivedReadingCommand = true;
     if (action === 'reader-settings-changed') htmlCaptions?.refresh();
     if (action === 'reader-settings-changed' && youtubeCaptions) {
       const language = await captionLanguage();
@@ -1027,7 +1045,7 @@
         incomplete.clear();
         document.getElementById('pt-notice')?.remove();
         void flush();
-      } else if (mode !== next || whole !== (action === 'all')) start(next, action === 'all');
+      } else if (mode !== next || whole !== (action === 'all') || firstManualFrameCommand) start(next, action === 'all');
     } else if (action === 'original') {
       clear();
     } else if (action === 'input') {
@@ -1043,8 +1061,14 @@
     }
   }
 
+  // An explicit reading command applies to the visible document, including a
+  // frame mounted later. Automatic translation still follows the root hint.
+  function respectDocumentHint() {
+    return !receivedReadingCommand && document.documentElement.matches(documentHint);
+  }
+
   document.addEventListener('pointerover', event => {
-    if (!event.altKey || !(event.target instanceof Element)) return;
+    if (!event.altKey || respectDocumentHint() || !(event.target instanceof Element)) return;
     const node = event.target.closest(blocks);
     if (!node || event.target.closest(excluded + ',' + media) || node === document.body) return;
     if (event.relatedTarget instanceof Node && node.contains(event.relatedTarget)) return;
@@ -1072,6 +1096,14 @@
   globalThis.parallelReading = { getState, async run(action) { await run(action); signalState(); } };
 
   chrome.runtime.onMessage.addListener(({ action }, _sender, reply) => {
+    if (action === 'reading-mode-for-child' && window === window.top) {
+      // A child can finish loading while the top document is still reading its preferences.
+      initialReading.then(() => {
+        if (mode) reply({ command: whole ? 'all' : mode, manual: receivedReadingCommand });
+        else reply(receivedReadingCommand ? 'original' : null);
+      });
+      return true;
+    }
     if (action === 'reading-state') {
       reply(getState());
       return;
@@ -1089,7 +1121,14 @@
     return true;
   });
 
-  chrome.runtime.sendMessage({ action: 'preferences' })
-    .then(enabled => { if (enabled && !mode) { start('dual'); signalState(); } })
+  const initialReading = chrome.runtime.sendMessage({ action: 'preferences' })
+    .then(preference => {
+      const command = preference?.command ?? preference;
+      if (receivedReadingCommand || !['dual', 'only', 'all'].includes(command)) return;
+      receivedReadingCommand = preference?.manual === true;
+      if (respectDocumentHint()) return;
+      start(command === 'only' ? 'only' : 'dual', command === 'all');
+      signalState();
+    })
     .catch(() => {});
 })();

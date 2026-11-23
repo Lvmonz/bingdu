@@ -3,7 +3,7 @@
   "private": true,
   "description": "并读 Chrome 扩展的浏览器回归测试",
   "scripts": {
-    "test": "node tests/youtube-page.cjs && node tests/youtube-embeds.cjs"
+    "test": "node tests/youtube-page.cjs && node tests/youtube-embeds.cjs && node tests/lesson-page.cjs"
   },
   "devDependencies": {
     "playwright": "1.61.0"
