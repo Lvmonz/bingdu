@@ -38,8 +38,17 @@
     return /^for\b/i.test(right) && /\b(?:responsibility|responsible|accountability|accountable)$/.test(tail);
   }
 
+  function singleComparison(spec) {
+    const text = spec.words.map(w => w[1]).join(' ');
+    // A short sentence built around one comparison loses its point when the
+    // viewer sees the relationship, its first term and its second term separately.
+    return spec.duration <= 10000 && text.length <= 120 && !/[,;:]|\b(?:but|because|although)\b/i.test(text) &&
+      /\b(?:gap|difference|distinction|balance|contrast|choice|relationship) between .+? and .+/i.test(text);
+  }
+
   function validScreens(spec, screens) {
     if (!Array.isArray(screens) || !screens.length || screens.length > spec.words.length) return false;
+    if (screens.length > 1 && singleComparison(spec)) return false;
     let from = 0;
     for (const screen of screens) {
       if (!screen || screen.first !== from+1 || !Number.isInteger(screen.last) ||
@@ -97,9 +106,10 @@
       }
     }
     if (lastTarget !== target.length-1) return null;
-    return groups.map(({first,last,start,end,text}) => ({start,end,text,
+    const paired = groups.map(({first,last,start,end,text}) => ({start,end,text,
       translation:target.slice(first,last+1).map(c => c.text).join('\n')}));
+    return paired.some(c => c.end-c.start > 12 || c.text.length > 160 || c.translation.length > 56) ? null : paired;
   }
 
-  globalThis.bingduSubtitleSemantics = {utterances,encode,validInput,validScreens,mapScreens,alignHuman};
+  globalThis.bingduSubtitleSemantics = {utterances,encode,validInput,singleComparison,validScreens,mapScreens,alignHuman};
 })();

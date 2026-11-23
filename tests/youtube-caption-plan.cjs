@@ -68,6 +68,11 @@ async function run() {
     [good[0],{...good[1],last:18}], [{...good[0],last:18},{...good[1],first:19}],
     [good[0],{...good[1],translation:' '}]
   ]) assert.equal(validScreens(spec,bad),false);
+  const comparison = 'There is a gap between what tools can do and what people feel comfortable doing.'.split(' ');
+  const pair = encode(unit(comparison.map((text,i) => ({text,start:i*.5})),8,false));
+  assert.equal(validScreens(pair,[{first:1,last:5,translation:'有一道差距。'},
+    {first:6,last:15,translation:'工具的能力和人能熟练使用的功能之间。'}]),false);
+  assert.ok(validScreens(pair,[{first:1,last:15,translation:'工具能做到的事和人能熟练使用的功能之间有差距。'}]));
   const opts = {title:'',currentTime:104,semantic:true,cancelled:()=>false,progress(){}};
   const actual = await prepare(full,async (texts,options) => {
     assert.equal(options.purpose,'subtitle-semantics');

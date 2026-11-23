@@ -110,13 +110,13 @@ async function translateSegments(texts, pageGroups, picture, apiKey, instruction
 }
 
 async function translateUtterances(texts, specs, apiKey, instructions, context, rate) {
-  const { validScreens } = globalThis.bingduSubtitleSemantics;
-  const entries = texts.map((text, i) => ({ id:'u' + (i+1), text, ...specs[i] }));
+  const { validScreens, singleComparison } = globalThis.bingduSubtitleSemantics;
+  const entries = texts.map((text, i) => ({ id:'u' + (i+1), text, ...specs[i], keepTogether:singleComparison(specs[i]) }));
   const results = new Map();
   const format = '视频字幕编辑。先通读整段发言，再共同决定中英文在哪个意群结束时一起换屏。' +
     '输入为完整英文发言，words 的每项是 [从1开始的编号,原词或短语,相对开口毫秒]，duration 是总毫秒。' +
     '按原讲者的意思译成简洁自然的目标语。每屏可以独立读懂，保留比较双方、否定、动词与对象、专名和数量单位。' +
-    '可以在同一屏内调整中文语序、补足有依据的指代。优先保留完整短句，长句按独立分句拆分。避免一词一屏。' +
+    'keepTogether 为 true 时整句作为一屏，完整说清比较关系与双方。中文优先用具体动作表达原文，把形容体验的词译成读者能体会的感受，勿堆砌抽象名词。可以在同一屏内调整中文语序、补足有依据的指代。优先保留完整短句，长句按独立分句拆分。避免一词一屏。' +
     '结合词的开口时间，争取每屏至少1.5秒，每秒约7个中文字。常见意群约2–6秒，完整比较或动作宾语可以稍长。篇幅过长先压缩冗词，分屏时保留两侧的中心意思。不同屏不得重译或借用下一屏的新事实。' +
     '输出前对照英文明辨同音错字、术语和数字。以实际 id 返回 JSON：' +
     '{"utterances":{"u1":[{"first":1,"last":5,"translation":"译文"}]}}。' +
