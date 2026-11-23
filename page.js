@@ -4,7 +4,13 @@
   const blocks = 'body,main,article,section,div,p,h1,h2,h3,h4,h5,h6,li,blockquote,figcaption,dt,dd,td,th,caption,summary,address,aside,figure,header';
   const hardExclusions = 'script,style,noscript,template,pre,textarea,select,input,[contenteditable]:not([contenteditable="false"]),[translate="no"],.notranslate,.pt-translation,#pt-notice,pt-reading-tools';
   const generalExclusions = hardExclusions + ',button,[role="button"],[role="toolbar"],nav,[role="navigation"],footer';
-  const navigation = ':is(nav,[role="navigation"],[role="menubar"],[role="menu"],[role="tablist"]) :is(a[href],button,[role="link"],[role="button"]),[role="tab"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"]';
+  const navigation = [
+    ':is(nav,[role="navigation"],[role="menubar"],[role="menu"],[role="tablist"]) :is(a[href],button,[role="link"],[role="button"])',
+    '.sj-page-lesson :is(#header,#lp-footer) :is(a,button,[role="link"],[role="button"],.header-link)',
+    '[role="tab"],[role="menuitem"],[role="menuitemcheckbox"],[role="menuitemradio"]'
+  ].join(',');
+  // Skilljar positions the lesson's own scrollport outside normal document flow.
+  const readingRoots = navigation + ',#lesson-body #lesson-main-content';
   // Keep site-specific chrome outside the document's reading flow.
   const siteExclusions = [
     ['youtube.com', '.ytp-caption-window-container,.caption-window,.ytp-caption-segment'],
@@ -72,6 +78,7 @@
   let viewWidth = window.innerWidth;
   let viewHeight = window.innerHeight;
   let mode = '';
+  let receivedReadingCommand = false;
   let whole = false;
   let generation = 0;
   const runningBatches = new Map();
@@ -247,7 +254,7 @@
       if (discoverChildren && !observedShadows.has(shadow)) {
         observedShadows.add(shadow);
         mutations.observe(shadow, observerOptions);
-        for (const label of shadow.querySelectorAll(navigation)) watch(label);
+        for (const unit of shadow.querySelectorAll(readingRoots)) watch(unit);
       }
       for (const child of shadow.childNodes) visit(child, child);
       finish();
@@ -523,8 +530,8 @@
       }
       return;
     }
-    if (root.matches(navigation)) watch(root);
-    for (const label of root.querySelectorAll(navigation)) watch(label);
+    if (root.matches(readingRoots)) watch(root);
+    for (const unit of root.querySelectorAll(readingRoots)) watch(unit);
     if (root.closest(excluded)) return;
     // Unpack nested blocks when their container reaches the reading range.
     // New inline nodes belong to their nearest existing reading unit.
@@ -1008,6 +1015,7 @@
   });
 
   async function run(action) {
+    if (['page', 'dual', 'only', 'all', 'original'].includes(action)) receivedReadingCommand = true;
     if (action === 'reader-settings-changed') htmlCaptions?.refresh();
     if (action === 'reader-settings-changed' && youtubeCaptions) {
       const language = await captionLanguage();
@@ -1072,6 +1080,14 @@
   globalThis.parallelReading = { getState, async run(action) { await run(action); signalState(); } };
 
   chrome.runtime.onMessage.addListener(({ action }, _sender, reply) => {
+    if (action === 'reading-mode-for-child' && window === window.top) {
+      // A child can finish loading while the top document is still reading its preferences.
+      initialReading.then(() => {
+        if (mode) reply(whole ? 'all' : mode);
+        else reply(receivedReadingCommand ? 'original' : null);
+      });
+      return true;
+    }
     if (action === 'reading-state') {
       reply(getState());
       return;
@@ -1089,7 +1105,11 @@
     return true;
   });
 
-  chrome.runtime.sendMessage({ action: 'preferences' })
-    .then(enabled => { if (enabled && !mode) { start('dual'); signalState(); } })
+  const initialReading = chrome.runtime.sendMessage({ action: 'preferences' })
+    .then(command => {
+      if (receivedReadingCommand || !['dual', 'only', 'all'].includes(command)) return;
+      start(command === 'only' ? 'only' : 'dual', command === 'all');
+      signalState();
+    })
     .catch(() => {});
 })();
