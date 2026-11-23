@@ -133,16 +133,6 @@
         captionButton(player)?.getAttribute('aria-pressed') === 'false';
     }
 
-    function position() {
-      if (output.hidden) return;
-      const bounds = player.getBoundingClientRect();
-      const native = dialogueSegments(player);
-      if (!bounds.height) return;
-      const rects = native.map(el => el.getBoundingClientRect());
-      const anchor = rects.length ? Math.max(...rects.map(r => r.bottom)) - bounds.top : bounds.height * .88;
-      const y = Math.max(4, Math.min(bounds.height - output.offsetHeight - 4, anchor - output.offsetHeight));
-      output.style.top = y + 'px';
-    }
     function renderRow(row, text) {
       if (row.textContent !== text) row.textContent = text;
       row.hidden = !text;
@@ -159,10 +149,10 @@
       });
       const translation = showNativeAsTarget ? original : parts.filter(Boolean).join(' ');
       const showBoth = mode === 'dual' && usingSource && !showNativeAsTarget;
+      output.toggleAttribute('data-bilingual', showBoth);
       renderRow(sourceRow, showBoth ? original : '');
       renderRow(targetRow, showBoth && compare(original) === compare(translation) ? '' : translation);
       output.hidden = sourceRow.hidden && targetRow.hidden;
-      position();
     }
     function reset() {
       epoch++;
@@ -322,7 +312,6 @@
         }
       }
     });
-    const resize = new ResizeObserver(position);
     const playerTree = new MutationObserver(rebind);
     let videoEvents;
     const sourceChanges = { childList: true, characterData: true, subtree: true, attributes: true,
@@ -363,7 +352,6 @@
         sendSource('stop');
         player.removeAttribute('data-bingdu-captions');
         observer.disconnect();
-        resize.disconnect();
         player = next;
         session = crypto.randomUUID();
         trackState = { status:'pending', language:'', displayLanguage:'' };
@@ -372,7 +360,6 @@
         next.setAttribute('data-bingdu-captions', '');
         next.append(output);
         observer.observe(embed ? document.documentElement : next, sourceChanges);
-        resize.observe(next);
         button = captionButton(next);
         requestedCC = button?.getAttribute('aria-pressed') === 'false';
         if (requestedCC) button.click();
@@ -391,7 +378,6 @@
       playerTree.disconnect();
       videoEvents?.abort();
       peerObserver.disconnect();
-      resize.disconnect();
       stopHints();
       clearTimeout(handshakeTimer);
       events.abort();
@@ -439,7 +425,6 @@
     }
     listen(document, 'bingdu-youtube-source-state', onSourceState);
     observer.observe(embed ? document.documentElement : player, sourceChanges);
-    resize.observe(player);
     bindVideo();
     listen(document, 'yt-navigate-finish', () => { if (id !== videoId()) stop(false); });
     listen(window, 'pagehide', () => stop(true));

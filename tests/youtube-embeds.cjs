@@ -73,7 +73,8 @@ async function mockModel(worker) {
       if (String(url) !== 'https://api.deepseek.com/chat/completions') throw Error('Unexpected service');
       const request = JSON.parse(options.body);
       const original = request.messages.at(-1).content;
-      const translated = text => '译：' + text;
+      if (original.includes('Delayed caption')) await globalThis.captionGate;
+      const translated = text => text === 'Delayed caption' ? '这段译文会在原文出现后才返回，并且需要在较窄的播放器中显示为两行文字。' : '译：' + text;
       const content = request.response_format
         ? JSON.stringify({ translations: Object.fromEntries(JSON.parse(original).map(row => [row.id, translated(row.text)])) })
         : translated(original);
@@ -121,6 +122,54 @@ async function captionState(frame, mode, cue) {
   });
 }
 
+async function checkCaptionPosition(frame, worker) {
+  const box = frame.locator('.pt-youtube-caption');
+  const native = frame.locator('.ytp-caption-window-container');
+  const metrics = () => box.evaluate(el => {
+    const player = document.querySelector('#movie_player').getBoundingClientRect();
+    const bounds = el.getBoundingClientRect();
+    const source = el.querySelector('.pt-caption-source').getBoundingClientRect();
+    return { bottom: player.bottom - bounds.bottom, center: (bounds.left + bounds.right - player.left - player.right) / 2,
+      sourceY: source.bottom - player.top };
+  });
+  const stable = (a, b, label) => assert.ok(Math.abs(a - b) < 1, label + ': ' + a + ' → ' + b);
+  await worker.evaluate(() => { globalThis.captionGate = new Promise(resolve => { globalThis.finishCaption = resolve; }); });
+  const before = await metrics();
+  await native.evaluate(el => {
+    el.style.cssText = 'position:absolute;bottom:70%;left:5%';
+    el.querySelector('span').textContent = 'Delayed caption';
+    document.querySelector('#movie_player').classList.toggle('ytp-autohide');
+  });
+  await frame.waitForFunction(() => document.querySelector('.pt-caption-source').textContent === 'Delayed caption');
+  const pending = await metrics();
+  stable(before.bottom, pending.bottom, 'Native captions moved');
+  stable(before.center, pending.center, 'Caption center moved');
+  await worker.evaluate(() => { globalThis.finishCaption(); delete globalThis.captionGate; delete globalThis.finishCaption; });
+  await frame.waitForFunction(() => document.querySelector('.pt-caption-target').textContent.startsWith('这段译文'));
+  const wrapped = await box.locator('.pt-caption-target').evaluate(row => {
+    const range = document.createRange();
+    range.selectNodeContents(row);
+    return range.getClientRects().length;
+  });
+  assert.equal(wrapped, 2, 'The delayed target must wrap onto a second line');
+  const translated = await metrics();
+  stable(pending.bottom, translated.bottom, 'Translation moved the anchor');
+  stable(pending.sourceY, translated.sourceY, 'Late translation moved the original');
+  await native.evaluate(el => {
+    el.removeAttribute('style');
+    el.replaceWith(el.cloneNode(true));
+    document.querySelector('.ytp-caption-segment').textContent = 'First lesson';
+  });
+  await captionState(frame, 'dual', regularCue);
+  stable(before.bottom, (await metrics()).bottom, 'Rebuilt captions moved the anchor');
+  await frame.locator('#movie_player').evaluate(player => { player.style.height = '330px'; });
+  const resized = await metrics();
+  assert.ok(resized.bottom > before.bottom && resized.bottom < 45, 'The inset should adapt to player size');
+  stable(0, resized.center, 'Resized player lost horizontal centering');
+  await frame.locator('#movie_player').evaluate(player => player.style.removeProperty('height'));
+  stable(before.bottom, (await metrics()).bottom, 'Returning to the original size changed the inset');
+}
+
 async function run() {
   const profile = await fs.mkdtemp(path.join(os.tmpdir(), 'bingdu-embed-'));
   let context;
@@ -160,6 +209,7 @@ async function run() {
     });
     await float.click();
     await captionState(first, 'dual', regularCue);
+    await checkCaptionPosition(first, worker);
 
     await popup.getByRole('button', {name:'仅译文字幕', exact:true}).click();
     await captionState(first, 'only', regularCue);
