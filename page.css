@@ -1,0 +1,91 @@
+pt-dual.pt-dual {
+  display: inline !important;
+  font: inherit;
+  color: inherit;
+  white-space: inherit;
+  letter-spacing: inherit;
+  text-align: inherit;
+}
+pt-dual.pt-yt-dual {
+  display: block !important;
+  margin-block-start: .12em;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+/* YouTube clips the source heading itself. Give both languages room while
+   retaining the original link, typography, and width of its card. */
+:is(h1,h2,h3,h4,a,#video-title,.ytContentMetadataViewModelMetadataTextMaxLines2,.metadata-snippet-text,.metadata-snippet-container,.metadata-snippet-container-one-line):has(> .pt-yt-dual),
+:is(a#video-title,h3.title-and-badge,.metadata-snippet-container,.metadata-snippet-container-one-line):has(.pt-yt-dual) {
+  -webkit-line-clamp: unset !important;
+  max-height: none !important;
+  white-space: normal !important;
+}
+pt-dual.pt-yt-preview,
+ytd-expander:not([expanded]) > pt-dual.pt-yt-comment {
+  display: -webkit-box !important;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  overflow: hidden;
+}
+ytd-text-inline-expander:is([is-expanded],[expanded],[hidden]) + pt-dual.pt-yt-preview {
+  display: none !important;
+}
+.pt-translation:not(.pt-dual) {
+  display: block !important;
+  margin: .35em 0 .55em !important;
+  border-inline-start: 2px solid #489988 !important;
+  padding-inline-start: .65em !important;
+  color: inherit !important;
+  white-space: pre-wrap !important;
+  text-align: start !important;
+}
+.pt-original-hidden { display: none !important; }
+#pt-notice {
+  position: fixed !important;
+  inset: auto 18px 18px auto !important;
+  z-index: 2147483647 !important;
+  max-width: min(430px, 90vw) !important;
+  max-height: 55vh !important;
+  overflow: auto !important;
+  background: #122a2a !important;
+  color: #f3f8f5 !important;
+  white-space: pre-wrap !important;
+  padding: 14px 18px !important;
+  border-radius: 10px !important;
+  font: 15px/1.6 system-ui !important;
+}
+
+.pt-translation[hidden] { display: none !important; }
+
+.pt-youtube-caption {
+  position: absolute !important;
+  left: 50% !important;
+  transform: translateX(-50%) !important;
+  bottom: auto !important;
+  z-index: 65 !important;
+  width: max-content !important;
+  max-width: 90% !important;
+  box-sizing: border-box !important;
+  margin: 0 !important;
+  padding: .14em .55em .19em !important;
+  border-radius: .15em !important;
+  background: rgba(0,0,0,.82) !important;
+  color: white !important;
+  font: 450 clamp(15px, 1.65vw, 32px)/1.32 system-ui, sans-serif !important;
+  white-space: pre-line !important;
+  overflow-wrap: anywhere !important;
+  text-align: center !important;
+  pointer-events: none !important;
+}
+.pt-youtube-caption[hidden] { display: none !important; }
+
+:is([data-bingdu-captions], #movie_player:has(> .pt-youtube-caption))
+  :is(#ytp-caption-window-container,.ytp-caption-window-container,.caption-window,.ytp-caption-segment,#immersive-translate-caption-window) {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+[data-bingdu-captions] video::-webkit-media-text-track-container { visibility: hidden !important; }
+.pt-youtube-caption > div { display: block !important; }
+.pt-youtube-caption > div[hidden] { display: none !important; }
+.pt-youtube-caption > .pt-caption-target:not(:first-child) { margin-top: .04em; }

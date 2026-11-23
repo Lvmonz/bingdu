@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>并读 · DeepSeek 翻译</title>
+<link rel="stylesheet" href="panel.css">
+<script type="module" src="panel.js"></script>
+</head>
+<body>
+<main>
+<header><h1>并读</h1><span>DeepSeek V4.1 Flash</span></header>
+<section aria-labelledby="page-title">
+<h2 id="page-title">当前网页</h2>
+<div class="actions">
+<button class="primary" data-action="dual">双语阅读</button>
+<button data-action="only">仅显示译文</button>
+<button data-action="all">整页双语</button>
+<button data-action="original">恢复原文</button>
+<button data-action="captions">切换视频双语字幕</button>
+<button data-action="captions-dual" hidden>双语字幕</button>
+<button data-action="captions-only" hidden>仅译文字幕</button>
+<button data-action="captions-off" hidden>关闭字幕翻译</button>
+</div>
+<label class="check"><input type="checkbox" id="auto"><span id="auto-label">自动翻译此网站</span></label>
+</section>
+<section aria-labelledby="file-title">
+<h2 id="file-title" tabindex="-1">文本与文件</h2>
+<label for="source">原文</label>
+<textarea id="source" rows="3"></textarea>
+<label for="file">上传 TXT、SRT、VTT、ASS、PDF、EPUB 或图片</label>
+<input type="file" id="file" accept=".txt,.srt,.vtt,.ass,.pdf,.epub,image/png,image/jpeg,image/webp">
+<label id="file-format-label" hidden>导出格式
+<select id="file-format"></select>
+</label>
+<label class="check" id="force-ocr-label" hidden><input type="checkbox" id="force-ocr">对每页使用文字识别</label>
+<div class="actions">
+<button class="primary" id="translate">翻译</button>
+<button id="download" disabled>导出</button>
+</div>
+<pre id="result" hidden></pre>
+</section>
+<section aria-labelledby="settings-title">
+<h2 id="settings-title" tabindex="-1">翻译设置</h2>
+<p>翻译时，待译文字或图片会发送至 DeepSeek。扫描 PDF 会发送待识别的整页图像。密钥保存在当前浏览器，接口费用由你的账户承担。<a href="https://gist.github.com/Lvmonz/3d88f3da65400167a03b3332afba5301" target="_blank" rel="noopener noreferrer">阅读并读隐私政策</a></p>
+<form id="settings">
+<label for="secret">DeepSeek API Key</label>
+<input id="secret" type="password" autocomplete="off" placeholder="输入 API Key">
+<label for="language">目标语言</label>
+<input id="language" maxlength="80" required>
+<label for="input-language">输入框翻译目标语言</label>
+<input id="input-language" maxlength="80" required>
+<label for="glossary">术语表</label>
+<textarea id="glossary" rows="2" maxlength="4000" placeholder="每行填写一个偏好，例如 worker → 工作线程"></textarea>
+<div class="actions"><button type="submit">保存设置</button><button type="button" id="test">测试连接</button></div>
+</form>
+</section>
+</main>
+<p role="status" id="status"></p>
+</body>
+</html>

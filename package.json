@@ -1,0 +1,11 @@
+{
+  "name": "bingdu-extension-tests",
+  "private": true,
+  "description": "并读 Chrome 扩展的浏览器回归测试",
+  "scripts": {
+    "test": "node tests/youtube-page.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.61.0"
+  }
+}
