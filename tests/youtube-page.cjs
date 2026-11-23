@@ -61,14 +61,20 @@ async function installOfflineTranslator(context) {
         globalThis.subtitleRequests ||= [];
         globalThis.subtitleRequests.push({ input, context:JSON.parse(request.messages[1].content).subtitleContext });
       }
-      const translate = text => {
-        if (text === 'It feeds the lake.' && request.messages.length === 3 &&
-            JSON.parse(request.messages[1].content).subtitleContext.before === text) return '它为这座湖泊供水。';
+      const translate = (text, before) => {
+        if (text === 'It feeds the lake.' && before === text) return '它为这座湖泊供水。';
         return dictionary[text.trim()] || '其他测试译文';
       };
       let content;
       if (request.response_format) {
-        const translations = Object.fromEntries(JSON.parse(input).map(row => [row.id, translate(row.text)]));
+        const entries = JSON.parse(input);
+        if (globalThis.holdBatch && entries.some(row => row.text === 'Chapter 21.')) {
+          await new Promise(resolve => { globalThis.releaseBatch = resolve; });
+        }
+        const translations = Object.fromEntries(entries.map((row, i) => {
+          if (row.text === 'Chapter 21.') return [row.id, row.draft ? '第21章' : '这是一段足够长的中文初稿用来验证字幕会按可读时长再精简一次'];
+          return [row.id, translate(row.text, entries[i - 1]?.text)];
+        }));
         content = JSON.stringify({ translations });
       } else {
         content = translate(input);
@@ -137,6 +143,8 @@ async function checkSingleCaptionBox(page) {
     {tStartMs:25000,dDurationMs:4000,segs:[{utf8:'the'},{utf8:' lake.',tOffsetMs:400}]},
     {tStartMs:26100,dDurationMs:2000,segs:[{utf8:'It'},{utf8:' feeds',tOffsetMs:200},{utf8:' the lake.',tOffsetMs:500}]}
   ];
+  for (let i = 1; i <= 21; i++) events.push({ tStartMs:50000 + 3000 * i, dDurationMs:2000,
+    segs:[{utf8:'Chapter'},{utf8:' ' + i + '.',tOffsetMs:500}] });
   await page.route(trackUrl, route => route.fulfill({contentType:'application/json',body:JSON.stringify({events})}));
   await page.evaluate(async url => { await (await fetch(url)).text(); }, trackUrl);
   async function seek(seconds) {
@@ -145,9 +153,41 @@ async function checkSingleCaptionBox(page) {
       video.dispatchEvent(new Event('timeupdate'));
     }, seconds);
   }
-  await seek(22.2);
+  const [worker] = page.context().serviceWorkers();
+  await worker.evaluate(() => { globalThis.holdBatch = true; });
+  // A real seekable media clock exercises pause/resume from the extension's isolated world.
+  const sampleCount = 120 * 8000;
+  const wav = Buffer.alloc(44 + sampleCount, 128);
+  wav.write('RIFF'); wav.writeUInt32LE(36 + sampleCount, 4); wav.write('WAVEfmt ', 8);
+  wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(8000, 24); wav.writeUInt32LE(8000, 28); wav.writeUInt16LE(1, 32);
+  wav.writeUInt16LE(8, 34); wav.write('data', 36); wav.writeUInt32LE(sampleCount, 40);
+  await page.route('**/silent.wav', route => route.fulfill({ contentType:'audio/wav', body:wav }));
+  await page.locator('video').evaluate(async v => {
+    v.muted = true;
+    v.src = URL.createObjectURL(await (await fetch('/silent.wav')).blob());
+    await new Promise(resolve => v.addEventListener('loadedmetadata', resolve, {once:true}));
+    const seeked = new Promise(resolve => v.addEventListener('seeked', resolve, {once:true}));
+    v.currentTime = 22.2;
+    await seeked;
+    await v.play();
+    window.playEvents = [];
+    for (const name of ['play','pause']) v.addEventListener(name, () => window.playEvents.push(name));
+  });
   await choose('双语字幕');
+  await page.getByText(/正在准备整段字幕/).waitFor();
+  await page.waitForFunction(() => window.playEvents.includes('pause'));
+  await worker.evaluate(async () => {
+    const deadline = Date.now() + 5000;
+    while (!globalThis.releaseBatch && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
+    if (!globalThis.releaseBatch) throw Error('The full-track queue did not reach the last batch');
+    globalThis.holdBatch = false;
+    globalThis.releaseBatch();
+  });
   await expectText(page, '.pt-youtube-caption', 'We study the river basin.');
+  await page.waitForFunction(() => window.playEvents.includes('play'));
+  assert.deepEqual(await page.evaluate(() => window.playEvents), ['pause', 'play']);
+  await page.locator('video').evaluate(v => v.pause());
   await seek(23.8);
   assert.equal(await page.locator('.pt-caption-source').textContent(), 'We study the river basin.');
   await seek(24.7);
@@ -156,13 +196,18 @@ async function checkSingleCaptionBox(page) {
   await page.waitForFunction(() => document.querySelector('.pt-caption-target')?.textContent === '它为这座湖泊供水。');
   await seek(32);
   await page.locator('.pt-youtube-caption').waitFor({state:'hidden'});
+  const count = await worker.evaluate(() => globalThis.subtitleRequests.length);
+  await seek(113.3);
+  await page.waitForFunction(() => document.querySelector('.pt-caption-target')?.textContent === '第21章');
   await seek(22.4);
   await choose('仅译文字幕');
   await expectText(page, '.pt-caption-target', 'We study the river basin.', 'only');
   assert.ok(await page.locator('.pt-caption-source').isHidden());
-  const [worker] = page.context().serviceWorkers();
   const requests = await worker.evaluate(() => globalThis.subtitleRequests);
-  assert.ok(requests.some(({input, context}) => input.includes('We study the river basin.') && context.after === 'It feeds the lake.'));
+  assert.equal(requests.length, count, 'Seeking through a prepared track must make no translation requests');
+  assert.ok(requests.some(({input, context}) => input.includes('We study the river basin.') && context.after.startsWith('Chapter') &&
+    JSON.parse(input)[0].preferredChars > 0));
+  assert.ok(requests.some(({input}) => input.includes('"draft"') && input.includes('Chapter 21.')));
   await choose('关闭字幕翻译');
 }
 

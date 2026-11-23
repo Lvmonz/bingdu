@@ -106,6 +106,9 @@
     let current = [];
     let currentCueStart;
     let cues = [];
+    const planner = globalThis.bingduYoutubeCaptionPlan;
+    let plan;
+    let heldVideo;
     let timer;
     let blockedUntil = 0;
     let requestedCC = false;
@@ -142,7 +145,70 @@
       if (row.textContent !== text) row.textContent = text;
       row.hidden = !text;
     }
+    function releasePlayback(resume) {
+      const held = heldVideo;
+      heldVideo = undefined;
+      if (resume && held === video && held?.isConnected && held.paused && !held.ended && id === videoId()) {
+        held.play().catch(() => {});
+      }
+    }
+    function discardPlan(resume = true) {
+      plan = undefined;
+      releasePlayback(resume);
+    }
+    function planEligible() {
+      return planner && cues.length && !cueInfo.translated && base(cueInfo.language) &&
+        base(cueInfo.language) === base(trackState.language) && !sameLanguage(cueInfo.language, target) &&
+        video.duration !== Infinity && !player.classList.contains('ytp-live');
+    }
+    function configureCards(cards) {
+      planner.configureWindows(cards, base(target) === 'zh', video.playbackRate || 1, video.duration);
+    }
+    function beginPlan() {
+      epoch++;
+      pending.clear();
+      clearTimeout(timer);
+      const cards = planner.makeCards(cues, cueInfo.segmented);
+      configureCards(cards);
+      const preparing = { cards, done: 0, state: 'loading' };
+      plan = preparing;
+      if (!video.paused && !video.ended) {
+        heldVideo = video;
+        video.pause();
+      }
+      const cancelled = () => !active || plan !== preparing || id !== videoId();
+      const title = document.title.replace(/\s*[-–]\s*YouTube\s*$/i, '').slice(0, 180);
+      planner.prepare(cards, translate, { title, currentTime: video.currentTime, cancelled,
+        progress(done) { preparing.done = done; draw(); } }).then(() => {
+        if (cancelled()) return;
+        configureCards(cards);
+        preparing.state = 'ready';
+        draw();
+        releasePlayback(true);
+      }).catch(error => {
+        if (cancelled()) return;
+        preparing.state = 'failed';
+        if (/401|402|API Key/.test(error.message)) { notice(error.message); stop(true); return; }
+        notice('整轨字幕准备中断，已切回随播翻译。' + error.message);
+        releasePlayback(true);
+        reset();
+        scan();
+      });
+    }
     function draw() {
+      if (plan && plan.state !== 'failed' && planEligible()) {
+        const hidden = suppressed();
+        const visible = !hidden && plan.state === 'ready' ? planner.atTime(plan.cards, video.currentTime) : [];
+        const source = mode === 'dual' ? visible.map(card => card.text).join(' ') : '';
+        const translated = visible.map(card => card.translation).join(' ');
+        const loading = !hidden && plan.state === 'loading';
+        output.toggleAttribute('data-bilingual', !!source);
+        renderRow(sourceRow, source);
+        renderRow(targetRow, loading ? `正在准备整段字幕 · ${plan.done}/${plan.cards.length}` :
+          source && compare(source) === compare(translated) ? '' : translated);
+        output.hidden = sourceRow.hidden && targetRow.hidden;
+        return;
+      }
       const original = current.join(' ');
       const parts = current.map(line => {
         const key = captionKey(line);
@@ -189,6 +255,10 @@
           if (button.getAttribute('aria-pressed') === 'false') button.click();
         }
       }
+      if (planEligible()) {
+        if (!plan && !suppressed()) beginPlan();
+        if (plan && plan.state !== 'failed') { draw(); return; }
+      } else if (plan) discardPlan();
       let rows = suppressed() ? [] : captionLines(player);
       const visible = rows.join(' ');
       const status = trackState.status;
@@ -319,6 +389,7 @@
       }
     }
     function pump() {
+      if (plan && plan.state !== 'failed') return;
       if (!active || !current.length || showNativeAsTarget || suppressed() || running >= 2 || Date.now() < blockedUntil) return;
       firstChange = 0;
       const missing = (lines, future = false) => [...new Set(lines)].filter(line => {
@@ -363,6 +434,13 @@
     function bindVideo() {
       videoEvents?.abort();
       videoEvents = new AbortController();
+      // A user's play or seek while preparing takes ownership of playback.
+      for (const type of ['play','seeking']) video.addEventListener(type, () => {
+        if (heldVideo === video && (type === 'seeking' || !video.paused)) releasePlayback(false);
+      }, { signal: videoEvents.signal });
+      video.addEventListener('ratechange', () => {
+        if (plan?.state === 'ready') { configureCards(plan.cards); draw(); }
+      }, { signal: videoEvents.signal });
       for (const type of ['seeking','ended','emptied','seeked','timeupdate']) {
         video.addEventListener(type, type === 'seeked' || type === 'timeupdate' ? scan : reset, { signal: videoEvents.signal });
       }
@@ -408,6 +486,7 @@
     function stop(restoreCC = true) {
       if (!active) return;
       active = false;
+      discardPlan(restoreCC);
       reset();
       observer.disconnect();
       playerTree.disconnect();
@@ -424,6 +503,7 @@
       onStop();
     }
     function refresh(name) {
+      discardPlan();
       target = languageCode(name);
       reset(); cache.clear();
       sendSource('start');
@@ -472,6 +552,7 @@
     }, 10500);
     function followTimeline(nextId) {
       stopHints();
+      discardPlan(false);
       cues = [];
       hint = {};
       cueInfo = {};
@@ -483,6 +564,7 @@
       hint = info || {};
       const original = cues.length && !cueInfo.translated && base(cueInfo.language) === base(trackState.language);
       if (!original || (!hint.translated && base(hint.language) === base(cueInfo.language))) {
+        if (cues !== timeline && plan) discardPlan();
         cueInfo = hint;
         cues = timeline;
       }

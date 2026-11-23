@@ -86,7 +86,18 @@
       } else {
         if (i - begin >= 4 && (/[,;:][”"'’)]*$/.test(word.text) || /^(?:but|because|which|although|while)$/i.test(next.text))) clause = i + 1;
         if (length >= 120 || next.at - words[begin].at >= 7300) {
-          const stop = clause > begin ? clause : i + 1;
+          let stop = clause > begin ? clause : i + 1;
+          // If the hard wrap would orphan the final word(s), move a few words
+          // across the break with them, using the same original word onsets.
+          if (stop === i + 1 && i - begin >= 6 && /[.!?…][”"'’)]*$/.test(next.text)) {
+            stop = i - 2;
+            for (let j = i - 1; j >= Math.max(begin + 3, i - 5); j--) {
+              if (/^(?:what|which|who|when|where|how|because|although|while)$/i.test(words[j].text)) {
+                stop = /^(?:and|or)$/i.test(words[j - 1].text) ? j - 1 : j;
+                break;
+              }
+            }
+          }
           emit(stop);
           i = stop - 1;
         }
