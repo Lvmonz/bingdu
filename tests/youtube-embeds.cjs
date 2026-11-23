@@ -149,7 +149,8 @@ async function checkCaptionPosition(frame, worker) {
   const wrapped = await box.locator('.pt-caption-target').evaluate(row => {
     const range = document.createRange();
     range.selectNodeContents(row);
-    return range.getClientRects().length;
+    // An explicit semantic line break produces an additional zero-width rect.
+    return new Set([...range.getClientRects()].filter(rect => rect.width > 0).map(rect => rect.top)).size;
   });
   assert.equal(wrapped, 2, 'The delayed target must wrap onto a second line');
   const translated = await metrics();

@@ -65,21 +65,24 @@ ytd-text-inline-expander:is([is-expanded],[expanded],[hidden]) + pt-dual.pt-yt-p
   bottom: clamp(12px, 10%, 80px) !important;
   display: grid !important;
   z-index: 65 !important;
-  width: max-content !important;
-  max-width: 90% !important;
+  width: min(92%, 36em) !important;
+  max-width: 92% !important;
   box-sizing: border-box !important;
   margin: 0 !important;
   padding: 0 !important;
   background: transparent !important;
   color: white !important;
-  font: 450 clamp(15px, 1.65vw, 32px)/1.32 system-ui, sans-serif !important;
+  font: 450 var(--pt-caption-size, clamp(15px, 1.65vw, 32px))/1.32 system-ui, sans-serif !important;
   white-space: pre-line !important;
   overflow-wrap: anywhere !important;
   text-align: center !important;
   pointer-events: none !important;
 }
-/* 原文从两行译文的预留区域上方向上换行，迟到的译文从同一位置向下填充。 */
-.pt-youtube-caption[data-bilingual] { grid-template-rows: auto minmax(calc(2lh + .23em), auto) !important; }
+/* Reserve both language bands so their first baselines survive one-/two-line changes. */
+.pt-youtube-caption { grid-template-rows: minmax(calc(var(--pt-target-height, 2lh) + .35em), auto) !important; }
+.pt-youtube-caption[data-bilingual] {
+  grid-template-rows: minmax(calc(var(--pt-source-height, 2lh) + .35em), auto) minmax(calc(var(--pt-target-height, 2lh) + .35em), auto) !important;
+}
 .pt-youtube-caption[hidden] { display: none !important; }
 
 :is([data-bingdu-captions], #movie_player:has(> .pt-youtube-caption))
@@ -91,10 +94,12 @@ ytd-text-inline-expander:is([is-expanded],[expanded],[hidden]) + pt-dual.pt-yt-p
 [data-bingdu-captions] video::-webkit-media-text-track-container { visibility: hidden !important; }
 .pt-youtube-caption > div {
   display: block !important;
-  align-self: start;
+  align-self: stretch;
   padding: .14em .55em .19em;
   background: rgba(0,0,0,.82);
   border-radius: .15em;
+  line-break: strict;
+  text-wrap: pretty;
 }
 .pt-youtube-caption > div[hidden] { display: none !important; }
 .pt-youtube-caption[data-bilingual] > .pt-caption-target { grid-row: 2; }

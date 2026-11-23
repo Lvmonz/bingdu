@@ -107,7 +107,43 @@
     let currentCueStart;
     let cues = [];
     const planner = globalThis.bingduYoutubeCaptionPlan;
+    const canvas = document.createElement('canvas').getContext('2d');
+    const formatted = new Map();
+    let textWidth = 0, fontSize = 16;
     let plan;
+    function reserveTrackRows() {
+      if (plan?.state !== 'ready' || textWidth <= 0) return;
+      let sourceLines = 2, targetLines = 2;
+      let simultaneous = [];
+      const measure = text => canvas.measureText(text).width;
+      for (const card of plan.cards) {
+        simultaneous = simultaneous.filter(other => other.displayEnd > card.start);
+        simultaneous.push(card);
+        const source = simultaneous.map(other => other.text).join(' ');
+        let translated = simultaneous.map(other => other.translation).join(' ');
+        if (base(target) === 'zh') translated = planner.chineseLines(translated, measure, textWidth, 18 * fontSize);
+        sourceLines = Math.max(sourceLines, planner.lineCount(source, measure, textWidth));
+        targetLines = Math.max(targetLines, planner.lineCount(translated, measure, textWidth));
+      }
+      output.style.setProperty('--pt-source-height', sourceLines + 'lh');
+      output.style.setProperty('--pt-target-height', targetLines + 'lh');
+    }
+    function measurePlayer() {
+      const width = player.clientWidth;
+      if (!width || !canvas) return;
+      fontSize = Math.max(13, Math.min(30, width / 48));
+      output.style.setProperty('--pt-caption-size', fontSize + 'px');
+      const style = getComputedStyle(output);
+      canvas.font = style.fontWeight + ' ' + fontSize + 'px ' + style.fontFamily;
+      const available = Math.min(width * 0.92, fontSize * 36) - fontSize * 1.2 - 2;
+      if (available === textWidth) return;
+      textWidth = available;
+      formatted.clear();
+      reserveTrackRows();
+    }
+    const playerSize = new ResizeObserver(() => { measurePlayer(); draw(); });
+    playerSize.observe(player);
+    measurePlayer();
     let heldVideo;
     let timer;
     let blockedUntil = 0;
@@ -142,6 +178,13 @@
     }
 
     function renderRow(row, text) {
+      if (row === targetRow && base(target) === 'zh' && text && planner && textWidth > 0) {
+        if (!formatted.has(text)) {
+          if (formatted.size >= 200) formatted.clear();
+          formatted.set(text, planner.chineseLines(text, value => canvas.measureText(value).width, textWidth, 18 * fontSize));
+        }
+        text = formatted.get(text);
+      }
       if (row.textContent !== text) row.textContent = text;
       row.hidden = !text;
     }
@@ -154,6 +197,8 @@
     }
     function discardPlan(resume = true) {
       plan = undefined;
+      output.style.removeProperty('--pt-source-height');
+      output.style.removeProperty('--pt-target-height');
       releasePlayback(resume);
     }
     function planEligible() {
@@ -168,7 +213,7 @@
       epoch++;
       pending.clear();
       clearTimeout(timer);
-      const cards = planner.makeCards(cues, cueInfo.segmented);
+      const cards = planner.makeCards(cues, cueInfo.segmented, base(cueInfo.language) === 'en');
       configureCards(cards);
       const preparing = { cards, done: 0, state: 'loading' };
       plan = preparing;
@@ -183,6 +228,7 @@
         if (cancelled()) return;
         configureCards(cards);
         preparing.state = 'ready';
+        reserveTrackRows();
         draw();
         releasePlayback(true);
       }).catch(error => {
@@ -466,6 +512,8 @@
         player.removeAttribute('data-bingdu-captions');
         observer.disconnect();
         player = next;
+        playerSize.disconnect();
+        playerSize.observe(next);
         session = crypto.randomUUID();
         trackState = { status:'pending', language:'', displayLanguage:'' };
         nativeAtStart = captionLines(next).join(' ');
@@ -490,6 +538,7 @@
       reset();
       observer.disconnect();
       playerTree.disconnect();
+      playerSize.disconnect();
       videoEvents?.abort();
       peerObserver.disconnect();
       stopHints();

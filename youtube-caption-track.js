@@ -67,11 +67,14 @@
     }
     const cues = [];
     let begin = 0, clause = -1, length = 0;
-    function emit(stop) {
+    function emit(stop, continues = false) {
       const last = words[stop - 1], next = words[stop];
       const end = Math.min(last.end, next?.at ?? Infinity, last.at + 1100);
-      if (end > words[begin].at) cues.push({ start:words[begin].at / 1000, end:end / 1000,
-        text:words.slice(begin, stop).map(word => word.text).join(' ') });
+      if (end > words[begin].at) {
+        const spoken = words.slice(begin, stop);
+        cues.push({ start:words[begin].at / 1000, end:end / 1000, text:spoken.map(word => word.text).join(' '),
+          words:spoken.map(word => ({ text:word.text, start:word.at / 1000 })), continues });
+      }
       begin = stop;
       clause = -1;
       length = 0;
@@ -98,7 +101,7 @@
               }
             }
           }
-          emit(stop);
+          emit(stop, true);
           i = stop - 1;
         }
       }

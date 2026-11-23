@@ -5,9 +5,22 @@ const vm = require('node:vm');
 
 const env = { location: {hostname:'www.youtube.com'}, setTimeout };
 vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'youtube-caption-plan.js'), 'utf8'), env);
-const { makeCards, configureWindows, prepare, atTime } = env.bingduYoutubeCaptionPlan;
+const { makeCards, configureWindows, prepare, atTime, chineseLines } = env.bingduYoutubeCaptionPlan;
 
 async function run() {
+  const sentence = 'We now understand the first approach, but the second approach needs a little more practice.';
+  const words = sentence.split(' ').map((text, i) => ({ text, start:5+i*0.4 }));
+  const parts = makeCards([{start:5, end:12, text:sentence, words}], true);
+  assert.ok(parts.length > 1);
+  assert.equal(Array.from(parts, cue => cue.text).join(' '), sentence);
+  for (const [i, cue] of parts.entries()) {
+    assert.ok(words.some(word => word.start === cue.start));
+    assert.ok(cue.end - cue.start >= 1.8);
+    if (i) assert.equal(cue.start, parts[i-1].end);
+  }
+  const zh = '先了解第一种方法，再练习第二种方法。';
+  assert.equal(chineseLines(zh, text=>text.length, 13, 10), '先了解第一种方法，\n再练习第二种方法。');
+  assert.ok(!chineseLines('这个过程预计需要12分钟才能完成。', text=>text.length, 12, 8).includes('12\n分钟'));
   const original = [
     {start:0, end:1, text:'Hi.'}, {start:1.2, end:3.4, text:'>> Welcome.'},
     {start:4, end:4.4, text:'Ready?'}, {start:10, end:16, text:'Continue.'}
