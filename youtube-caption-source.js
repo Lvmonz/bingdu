@@ -66,9 +66,23 @@
     return '';
   }
 
+  function authoredTarget(player, code) {
+    if (!code) return '';
+    const tracks = player?.getPlayerResponse?.()?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+    const wanted = new Intl.Locale(code).script;
+    const match = tracks.filter(t => {
+      const lang = language(t.languageCode);
+      return family(lang) === family(code) && !auto(t) && !translated(t) && t.kind !== 'forced' &&
+        typeof t.baseUrl === 'string' && t.baseUrl.length < 12000 &&
+        (!wanted || new Intl.Locale(lang).maximize().script === wanted);
+    }).sort((a,b) => Number(b.languageCode === code) - Number(a.languageCode === code))[0];
+    return match?.baseUrl || '';
+  }
+
   function state(s, status, track) {
     s.status = status;
     const detail = JSON.stringify({ session: s.session, videoId: s.videoId, mediaId: s.mediaId || '', status,
+      authoredUrl: status === 'ready' ? s.authoredUrl : '',
       language: s.source || '', displayLanguage: display(track), switched: !!s.switched });
     if (s.last === detail || active !== s) return;
     s.last = detail;
@@ -103,11 +117,85 @@
     }
     check();
   }
+  // Reuse an original timed-text response already delivered to this player.
+  // Only the public track identifiers cross into the extension's content world.
+  function watchCaptionResponses(session) {
+    const fetchPage = window.fetch, openRequest = XMLHttpRequest.prototype.open;
+    const maxBytes = 2 * 1024 * 1024;
+    function trackAddress(input) {
+      const value = input instanceof Request ? input.url : String(input);
+      if (!value.includes('/api/timedtext')) return;
+      try {
+        const url = new URL(value, location.href);
+        if (url.pathname !== '/api/timedtext' || (url.origin !== location.origin &&
+            !(embed && url.origin === 'https://www.youtube.com')) ||
+            ['tlang','sq','seq','live'].some(k => url.searchParams.has(k))) return;
+        const id = url.searchParams.get('v');
+        if (!id || id !== (session.mediaId || (embed ? playerId(session.player) : session.videoId))) return;
+        const safe = new URL(url.pathname, url.origin);
+        for (const key of ['v','lang','kind','vssId','name']) {
+          if (url.searchParams.has(key)) safe.searchParams.set(key, url.searchParams.get(key));
+        }
+        return safe.href;
+      } catch { return; }
+    }
+    function deliver(address, text, started) {
+      if (session !== active || !text || text.length > maxBytes) return;
+      document.dispatchEvent(new CustomEvent('bingdu-youtube-track-body', {
+        detail:JSON.stringify({session:session.session, address, started, text})
+      }));
+    }
+    async function read(response, address, started) {
+      if (session !== active || !response.ok || !response.body ||
+          Number(response.headers.get('content-length')) > maxBytes) return;
+      const reader = response.clone().body.getReader();
+      const decoder = new TextDecoder();
+      let text = '', size = 0;
+      try {
+        for (;;) {
+          const {done,value} = await reader.read();
+          if (done) { deliver(address,text + decoder.decode(),started); return; }
+          size += value.byteLength;
+          if (size > maxBytes || session !== active) { void reader.cancel().catch(() => {}); return; }
+          text += decoder.decode(value,{stream:true});
+        }
+      } finally { reader.releaseLock(); }
+    }
+    function fetch(input, ...args) {
+      const started = performance.now();
+      const result = fetchPage.call(this,input,...args);
+      const address = trackAddress(input);
+      if (address) result.then(response => read(response,address,started)).catch(() => {});
+      return result;
+    }
+    function open(method, input, ...args) {
+      const result = openRequest.call(this,method,input,...args);
+      const address = trackAddress(input);
+      if (address && String(method).toUpperCase() === 'GET') {
+        const started = performance.now();
+        const loaded = () => {
+          if (session !== active || this.status !== 200 || trackAddress(this.responseURL) !== address) return;
+          if (!this.responseType || this.responseType === 'text') deliver(address,this.responseText,started);
+          else if (this.responseType === 'json') deliver(address,JSON.stringify(this.response),started);
+        };
+        this.addEventListener('loadend',loaded,{once:true});
+      }
+      return result;
+    }
+    try { window.fetch = fetch; } catch { /* A page may freeze its API. */ }
+    try { XMLHttpRequest.prototype.open = open; } catch { /* Keep the timing fallback. */ }
+    return () => {
+      if (window.fetch === fetch) window.fetch = fetchPage;
+      if (XMLHttpRequest.prototype.open === open) XMLHttpRequest.prototype.open = openRequest;
+    };
+  }
+
   function finish(restore) {
     const s = active;
     active = undefined;
     if (!s) return;
     clearTimeout(s.timer);
+    s.detachResponses?.();
     if (restore && s.previous && s.wanted && s.player) restoreSelection(s);
   }
 
@@ -138,6 +226,11 @@
       s.deadline = Date.now() + 8000;
     }
     s.player = p;
+    if (s.mediaId !== mediaId || s.authoredFor !== s.target || s.authoredPlayer !== p) {
+      s.authoredFor = s.target;
+      s.authoredPlayer = p;
+      s.authoredUrl = authoredTarget(p, s.target);
+    }
     s.mediaId = mediaId;
     const track = current(p);
     s.current = track;
@@ -164,6 +257,7 @@
 
     const response = p.getPlayerResponse?.();
     const renderer = response?.captions?.playerCaptionsTracklistRenderer;
+    if (!s.authoredUrl && renderer?.captionTracks?.length) s.authoredUrl = authoredTarget(p, s.target);
     const list = p.getOption('captions', 'tracklist', { includeAsr: true });
     const tracks = Array.isArray(list) && list.length ? list : renderer?.captionTracks || [];
     const originalTracks = tracks.filter(t => language(t?.languageCode) && !translated(t) && t.kind !== 'forced');
@@ -232,6 +326,7 @@
       const s = { videoId: req.videoId, session: req.session, target: language(req.targetLanguage),
         deadline: Date.now() + 8000 };
       active = s;
+      s.detachResponses = watchCaptionResponses(s);
       tick(s);
     }
   });

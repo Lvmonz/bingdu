@@ -41,12 +41,16 @@
       !segment.closest('[hidden],[aria-hidden="true"],.ytp-caption-window-top:has(.ytp-caption-segment svg)'));
   }
   function captionLines(player) {
-    const rows = new Map();
+    const groups = new Map();
     for (const segment of dialogueSegments(player)) {
-      const row = segment.closest('.caption-visual-line,.caption-window') || segment.parentElement;
+      const window = segment.closest('.caption-window,.ytp-caption-window-container');
+      if (!groups.has(window)) groups.set(window, new Map());
+      const rows = groups.get(window);
+      const row = segment.closest('.caption-visual-line') || window;
       rows.set(row, (rows.get(row) || '') + segment.textContent);
     }
-    return [...new Set([...rows.values()].map(normalize).filter(text => text && text.length <= 1200))];
+    return [...new Set([...groups.values()].map(rows => normalize([...rows.values()].join(' ')))
+      .filter(text => text && text.length <= 1200))];
   }
 
   function visiblePlayer() {
@@ -100,7 +104,28 @@
     let active = true;
     let epoch = 0;
     let current = [];
+    let currentCueStart;
     let cues = [];
+    const planner = globalThis.bingduCaptionTimeline;
+    const canvas = document.createElement('canvas').getContext('2d');
+    const formatted = new Map();
+    let textWidth = 0, fontSize = 16;
+    let plan;
+    function measurePlayer() {
+      const width = player.clientWidth;
+      if (!width || !canvas) return;
+      fontSize = Math.max(13, Math.min(30, width / 48));
+      output.style.setProperty('--pt-caption-size', fontSize + 'px');
+      const style = getComputedStyle(output);
+      canvas.font = style.fontWeight + ' ' + fontSize + 'px ' + style.fontFamily;
+      const available = Math.min(width * 0.92, fontSize * 36) - fontSize * 1.2 - 2;
+      if (available === textWidth) return;
+      textWidth = available;
+      formatted.clear();
+    }
+    const playerSize = new ResizeObserver(() => { measurePlayer(); draw(); });
+    playerSize.observe(player);
+    measurePlayer();
     let timer;
     let blockedUntil = 0;
     let requestedCC = false;
@@ -134,22 +159,68 @@
     }
 
     function renderRow(row, text) {
+      if (row === targetRow && base(target) === 'zh' && text && planner && textWidth > 0) {
+        if (!formatted.has(text)) {
+          if (formatted.size >= 200) formatted.clear();
+          formatted.set(text, planner.chineseLines(text, value => canvas.measureText(value).width, textWidth, 18 * fontSize));
+        }
+        text = formatted.get(text);
+      }
       if (row.textContent !== text) row.textContent = text;
       row.hidden = !text;
     }
-    function draw() {
-      const original = current.join(' ');
-      const parts = current.map(line => {
-        if (cache.has(line)) return cache.get(line);
-        for (let cut = line.lastIndexOf(' '); cut >= 4; cut = line.lastIndexOf(' ', cut - 1)) {
-          const prefix = line.slice(0, cut);
-          if (cache.has(prefix)) return cache.get(prefix);
-        }
-        return '';
+    function discardPlan() {
+      plan?.controller.abort();
+      plan?.session?.close();
+      plan = undefined;
+    }
+    function planEligible() {
+      return planner && cues.length && !cueInfo.translated && base(cueInfo.language) &&
+        base(cueInfo.language) === base(trackState.language) && !sameLanguage(cueInfo.language, target) &&
+        video.duration !== Infinity && !player.classList.contains('ytp-live');
+    }
+    function beginPlan() {
+      epoch++;
+      pending.clear();
+      clearTimeout(timer);
+      const cards = cues.map(cue => ({...cue}));
+      planner.indexCards(cards);
+      const currentPlan = {cards, controller:new AbortController()};
+      plan = currentPlan;
+      const title = document.title.replace(/\s*[-–]\s*YouTube\s*$/i, '').slice(0, 180);
+      const startRequests = () => {
+        currentPlan.session = planner.createSession(cards, translate, {title, repaint:draw,
+          onError(error) {
+            if (shownError !== error.message) { notice(error.message); shownError = error.message; }
+            if (/401|402|API Key/.test(error.message)) stop(true);
+          }});
+        scan();
+      };
+      if (!trackState.authoredUrl) { startRequests(); return; }
+      const signal = currentPlan.controller.signal;
+      globalThis.bingduReadAuthoredCaption(trackState.authoredUrl, mediaId, target, signal).then(track => {
+        if (signal.aborted) return;
+        const aligned = globalThis.bingduSubtitleSemantics.alignHuman(cues, track);
+        if (!aligned) { startRequests(); return; }
+        planner.indexCards(aligned);
+        currentPlan.cards = aligned;
+        draw();
       });
-      const translation = showNativeAsTarget ? original : parts.filter(Boolean).join(' ');
+    }
+    function draw() {
+      if (plan && planEligible()) {
+        const visible = suppressed() ? [] : planner.atTime(plan.cards, video.currentTime);
+        const source = mode === 'dual' ? visible.map(card => card.text).join(' ') : '';
+        const translated = visible.every(card => card.translation) ? visible.map(card => card.translation).join(' ') : '';
+        renderRow(sourceRow, source);
+        renderRow(targetRow, source && compare(source) === compare(translated) ? '' : translated);
+        output.hidden = sourceRow.hidden && targetRow.hidden;
+        return;
+      }
+      const original = current.join(' ');
+      const parts = current.map(line => cache.get(captionKey(line)));
+      const translation = showNativeAsTarget ? original : parts.every(Boolean) ? parts.join(' ') : '';
       const showBoth = mode === 'dual' && usingSource && !showNativeAsTarget;
-      output.toggleAttribute('data-bilingual', showBoth);
       renderRow(sourceRow, showBoth ? original : '');
       renderRow(targetRow, showBoth && compare(original) === compare(translation) ? '' : translation);
       output.hidden = sourceRow.hidden && targetRow.hidden;
@@ -157,6 +228,7 @@
     function reset() {
       epoch++;
       current = [];
+      currentCueStart = undefined;
       pending.clear();
       blockedUntil = 0;
       firstChange = 0;
@@ -181,6 +253,14 @@
           if (button.getAttribute('aria-pressed') === 'false') button.click();
         }
       }
+      if (planEligible()) {
+        if (!plan && !suppressed()) beginPlan();
+        if (plan) {
+          draw();
+          if (!suppressed()) plan.session?.update(video.currentTime);
+          return;
+        }
+      } else if (plan) discardPlan();
       let rows = suppressed() ? [] : captionLines(player);
       const visible = rows.join(' ');
       const status = trackState.status;
@@ -202,18 +282,21 @@
       }
       // Keep the original transcript on a native language change. It is tied
       // to this video and remains usable even while YouTube repaints its CC.
-      if (!suppressed() && cues.length && !cueInfo.translated && base(cueInfo.language) &&
-          base(cueInfo.language) === base(trackState.language)) {
+      const originalTrack = cues.length && !cueInfo.translated && base(cueInfo.language) &&
+        base(cueInfo.language) === base(trackState.language);
+      let cueStart;
+      if (!suppressed() && originalTrack) {
         const timed = cuesAt(video.currentTime);
-        if (timed.length) {
+        if (timed.length || cueInfo.segmented) {
           rows = [...new Set(timed.map(cue => cue.text))];
+          if (cueInfo.segmented) cueStart = timed[0]?.start;
           waitingForChange = '';
           source = true;
           passthrough = sameLanguage(cueInfo.language, target);
         }
       }
       const peer = !suppressed() && alternateSource();
-      if (peer?.length && (!rows.length || status === 'unavailable' || status === 'unsupported')) {
+      if (peer?.length && !(originalTrack && cueInfo.segmented) && (!rows.length || status === 'unavailable' || status === 'unsupported')) {
         rows = peer;
         source = true;
         passthrough = sameLanguage(trackState.language, target) || (!trackState.language && targetScript(peer.join(' '), target));
@@ -224,7 +307,8 @@
         current = [];
         draw();
       }
-      if (rows.length === current.length && rows.every((line, i) => line === current[i])) return;
+      if (currentCueStart === cueStart && rows.length === current.length && rows.every((line, i) => line === current[i])) return;
+      currentCueStart = cueStart;
       current = rows;
       draw();
       if (rows.length) {
@@ -256,17 +340,37 @@
       return cues.slice(low, low + 4).filter(cue => cue.start <= t + 12).map(cue => cue.text);
     }
 
+    function cueIndex(line, future) {
+      const low = nextCue(video.currentTime);
+      const from = future ? low : Math.max(0, low - 4);
+      const to = future ? Math.min(cues.length, low + 4) : low;
+      for (let i = from; i < to; i++) {
+        if (cues[i].text === line && (future || cues[i].end > video.currentTime)) return i;
+      }
+      return -1;
+    }
+    function captionKey(line, future = false) {
+      const index = cueInfo.segmented ? cueIndex(line, future) : -1;
+      return index < 0 ? line : JSON.stringify([cues[index].start, line]);
+    }
     async function request(lines, speculative) {
       const generation = epoch;
+      const keys = lines.map(line => captionKey(line, speculative));
+      const first = cueIndex(lines[0], speculative), last = cueIndex(lines.at(-1), speculative);
+      const context = {
+        title: document.title.replace(/\s*[-–]\s*YouTube\s*$/i, '').slice(0, 180),
+        before: first > 0 ? cues[first - 1].text : '',
+        after: last >= 0 ? cues[last + 1]?.text || '' : ''
+      };
       running++;
-      lines.forEach(line => pending.add(line));
+      keys.forEach(key => pending.add(key));
       try {
-        const values = await translate(lines);
+        const values = await translate(lines, { purpose:'subtitle', context });
         if (!active || generation !== epoch) return;
         lines.forEach((line, i) => {
           if (!values[i]) return;
           if (cache.size >= 300) cache.delete(cache.keys().next().value);
-          cache.set(line, values[i]);
+          cache.set(keys[i], values[i]);
         });
         scan();
         if (active) draw();
@@ -282,18 +386,22 @@
         }
       } finally {
         running--;
-        if (generation === epoch) lines.forEach(line => pending.delete(line));
+        if (generation === epoch) keys.forEach(key => pending.delete(key));
         if (active && current.length) schedule(Math.max(80, blockedUntil - Date.now()));
       }
     }
     function pump() {
+      if (plan) return;
       if (!active || !current.length || showNativeAsTarget || suppressed() || running >= 2 || Date.now() < blockedUntil) return;
       firstChange = 0;
-      const missing = lines => [...new Set(lines)].filter(line => !cache.has(line) && !pending.has(line));
+      const missing = (lines, future = false) => [...new Set(lines)].filter(line => {
+        const key = captionKey(line, future);
+        return !cache.has(key) && !pending.has(key);
+      });
       const needed = missing(current);
       if (needed.length) void request(needed.slice(0, 6), false);
       if (running < 2 && cues.length && usingSource && !cueInfo.translated && (!trackState.language || base(trackState.language) === base(cueInfo.language))) {
-        const future = missing(upcoming());
+        const future = missing(upcoming(), true);
         if (future.length) void request(future, true);
       }
     }
@@ -353,6 +461,8 @@
         player.removeAttribute('data-bingdu-captions');
         observer.disconnect();
         player = next;
+        playerSize.disconnect();
+        playerSize.observe(next);
         session = crypto.randomUUID();
         trackState = { status:'pending', language:'', displayLanguage:'' };
         nativeAtStart = captionLines(next).join(' ');
@@ -373,9 +483,11 @@
     function stop(restoreCC = true) {
       if (!active) return;
       active = false;
+      discardPlan();
       reset();
       observer.disconnect();
       playerTree.disconnect();
+      playerSize.disconnect();
       videoEvents?.abort();
       peerObserver.disconnect();
       stopHints();
@@ -389,6 +501,7 @@
       onStop();
     }
     function refresh(name) {
+      discardPlan();
       target = languageCode(name);
       reset(); cache.clear();
       sendSource('start');
@@ -396,7 +509,7 @@
     }
     function setMode(next) { mode = next; draw(); }
     function onSourceState(event) {
-      if (typeof event.detail !== 'string' || event.detail.length > 1500) return;
+      if (typeof event.detail !== 'string' || event.detail.length > 16000) return;
       let value;
       try { value = JSON.parse(event.detail); } catch { return; }
       if (value?.session !== session || value.videoId !== id || !active) return;
@@ -415,6 +528,7 @@
           (value.switched || (trackState.displayLanguage && base(trackState.displayLanguage) !== base(value.language)))) {
         waitingForChange = nativeAtStart;
       }
+      if (plan && value.authoredUrl !== trackState.authoredUrl) discardPlan();
       trackState = value;
       if (value.status !== 'pending') clearTimeout(handshakeTimer);
       if (value.status === 'unavailable' && sourceNotice !== value.status) {
@@ -428,26 +542,25 @@
     bindVideo();
     listen(document, 'yt-navigate-finish', () => { if (id !== videoId()) stop(false); });
     listen(window, 'pagehide', () => stop(true));
-    if (hasButton && button.getAttribute('aria-pressed') === 'false') {
-      requestedCC = true;
-      button.click();
-    }
+    requestedCC = hasButton && button.getAttribute('aria-pressed') === 'false';
     handshakeTimer = setTimeout(() => {
       if (active && trackState.status === 'pending') { trackState.status = 'unsupported'; reset(); scan(); }
     }, 10500);
     function followTimeline(nextId) {
       stopHints();
+      discardPlan();
       cues = [];
       hint = {};
       cueInfo = {};
       mediaId = nextId;
-      stopHints = globalThis.bingduYoutubeTrackHints?.(mediaId, onTimeline) || (() => {});
+      stopHints = globalThis.bingduYoutubeTrackHints?.(mediaId, onTimeline, () => session) || (() => {});
     }
     function onTimeline(timeline, info) {
       if (!active) return;
       hint = info || {};
       const original = cues.length && !cueInfo.translated && base(cueInfo.language) === base(trackState.language);
       if (!original || (!hint.translated && base(hint.language) === base(cueInfo.language))) {
+        if (cues !== timeline && plan) discardPlan();
         cueInfo = hint;
         cues = timeline;
       }
@@ -457,6 +570,7 @@
     }
     if (!embed) followTimeline(id);
     sendSource('start');
+    if (requestedCC && button?.getAttribute('aria-pressed') === 'false') button.click();
     scan();
     return { stop, refresh, setMode, get mode() { return mode; } };
   }

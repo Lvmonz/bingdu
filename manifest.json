@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "并读 · 双语网页与文档翻译",
-  "version": "0.4.8",
+  "version": "0.4.14",
   "description": "在原网页逐段对照阅读，翻译扫描 PDF，导出双语 EPUB。使用自己的 DeepSeek API 密钥。",
   "permissions": [
     "storage",
@@ -45,12 +45,23 @@
     },
     {
       "matches": [
+        "https://*.youtube.com/*",
+        "https://*.youtube-nocookie.com/*",
+        "https://*.youtubeeducation.com/*"
+      ],
+      "js": ["youtube-caption-track.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    },
+    {
+      "matches": [
         "http://*/*",
         "https://*/*",
         "file:///*"
       ],
       "js": [
-        "youtube-caption-track.js",
+        "subtitle-semantics.js",
+        "caption-timeline.js",
         "youtube-captions.js",
         "html5-captions.js",
         "page.js",
