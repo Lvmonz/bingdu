@@ -57,31 +57,30 @@ ytd-text-inline-expander:is([is-expanded],[expanded],[hidden]) + pt-dual.pt-yt-p
 
 .pt-translation[hidden] { display: none !important; }
 
+.pt-html5-caption { white-space: pre-line; text-align: center; }
 .pt-youtube-caption {
   position: absolute !important;
   left: 50% !important;
   transform: translateX(-50%) !important;
   top: auto !important;
   bottom: clamp(12px, 10%, 80px) !important;
-  display: grid !important;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
   z-index: 65 !important;
-  width: min(92%, 36em) !important;
-  max-width: 92% !important;
+  width: max-content !important;
+  max-width: min(92%, 36em) !important;
   box-sizing: border-box !important;
   margin: 0 !important;
-  padding: 0 !important;
-  background: transparent !important;
+  padding: .16em .55em !important;
+  border-radius: .2em !important;
+  background: rgba(8,8,8,.75) !important;
   color: white !important;
   font: 450 var(--pt-caption-size, clamp(15px, 1.65vw, 32px))/1.32 system-ui, sans-serif !important;
   white-space: pre-line !important;
   overflow-wrap: anywhere !important;
   text-align: center !important;
   pointer-events: none !important;
-}
-/* Reserve both language bands so their first baselines survive one-/two-line changes. */
-.pt-youtube-caption { grid-template-rows: minmax(calc(var(--pt-target-height, 2lh) + .35em), auto) !important; }
-.pt-youtube-caption[data-bilingual] {
-  grid-template-rows: minmax(calc(var(--pt-source-height, 2lh) + .35em), auto) minmax(calc(var(--pt-target-height, 2lh) + .35em), auto) !important;
 }
 .pt-youtube-caption[hidden] { display: none !important; }
 
@@ -94,24 +93,12 @@ ytd-text-inline-expander:is([is-expanded],[expanded],[hidden]) + pt-dual.pt-yt-p
 [data-bingdu-captions] video::-webkit-media-text-track-container { visibility: hidden !important; }
 .pt-youtube-caption > div {
   display: block !important;
-  align-self: stretch;
-  padding: .14em .55em .19em;
-  background: rgba(0,0,0,.82);
-  border-radius: .15em;
+  max-width: 100%;
+  margin: 0;
   line-break: strict;
   text-wrap: pretty;
 }
 .pt-youtube-caption > div[hidden] { display: none !important; }
-.pt-youtube-caption[data-bilingual] > .pt-caption-target { grid-row: 2; }
-.pt-youtube-caption[data-bilingual] > .pt-caption-source { padding-bottom: 0; }
-.pt-youtube-caption:has(> .pt-caption-target:not([hidden])) > .pt-caption-source {
-  border-radius: .15em .15em 0 0;
-}
-.pt-youtube-caption > .pt-caption-source:not([hidden]) + .pt-caption-target {
-  padding-top: .04em;
-  border-radius: 0 0 .15em .15em;
-}
-
 select.pt-embed-caption-control {
   align-self: center;
   vertical-align: middle;

@@ -24,44 +24,81 @@
         t.mode = 'hidden';
       }
     }
-    let version = 0;
-    let original = '';
-    let translation = '';
+    const timeline = globalThis.bingduCaptionTimeline;
+    const cards = [];
+    let byCue = new WeakMap();
+    let snapshot = {};
+    let active = true;
+    let session;
+    const textOf = cue => (cue.getCueAsHTML?.().textContent ?? String(cue.text || '')).trim();
     function draw() {
+      const visible = video.ended ? [] : timeline.atTime(cards, video.currentTime);
+      const original = visible.map(card => card.text).join('\n');
+      const translation = visible.every(card => card.translation) ? visible.map(card => card.translation).join('\n') : '';
       const lines = mode === 'dual' && original !== translation ? [original, translation] : [translation];
-      output.textContent = lines.filter(Boolean).join('\n');
-      output.hidden = !output.textContent;
+      const text = lines.filter(Boolean).join('\n');
+      if (output.textContent !== text) output.textContent = text;
+      output.hidden = !text;
     }
-    async function update() {
-      const current = ++version;
-      original = [...(track.activeCues || [])].map(cue => cue.getCueAsHTML?.().textContent ??
-        String(cue.text || '').replace(/<[^>]*>/g, '')).join('\n').trim();
-      translation = '';
-      draw();
-      if (!original) return;
-      try {
-        const [result] = await translate([original]);
-        if (current === version) { translation = result; draw(); }
-      } catch (error) {
-        if (current === version) notice(error.message);
+    function readTrack() {
+      const cues = track.cues?.length ? track.cues : track.activeCues;
+      const length = cues?.length || 0;
+      const first = cues?.[0], last = cues?.[length - 1];
+      // Streaming players may edit a cue in place while it is being spoken.
+      const changed = Array.from(track.activeCues || []).some(cue => {
+        const card = byCue.get(cue);
+        return !card || card.start !== cue.startTime || card.end !== cue.endTime || card.raw !== cue.text;
+      });
+      if (!changed && snapshot.length === length && snapshot.first === first && snapshot.last === last) return;
+      snapshot = {length, first, last};
+      cards.length = 0;
+      for (const cue of cues || []) {
+        let card = byCue.get(cue);
+        if (!card || card.start !== cue.startTime || card.end !== cue.endTime || card.raw !== cue.text) {
+          card = {start:cue.startTime, end:cue.endTime, raw:cue.text, text:textOf(cue)};
+          byCue.set(cue, card);
+        }
+        if (card.text && card.end > card.start) cards.push(card);
       }
+      cards.sort((a, b) => a.start - b.start);
+      timeline.indexCards(cards);
+    }
+    function update() {
+      if (!active) return;
+      readTrack();
+      draw();
+      if (!video.ended) session.update(video.currentTime);
+    }
+    function refresh() {
+      session?.close();
+      snapshot = {};
+      byCue = new WeakMap();
+      session = timeline.createSession(cards, translate, {title:document.title.slice(0, 180), repaint:draw,
+        onError:error => notice(error.message)});
+      update();
     }
     const observer = new MutationObserver(() => { if (!video.isConnected) stop(); });
     observer.observe(document.documentElement, { childList: true, subtree: true });
     function checkTrack() { if (!tracks(video).includes(track)) stop(); }
-    track.addEventListener('cuechange', update);
-    video.textTracks.addEventListener('removetrack', checkTrack);
-    void update();
+    const events = new AbortController();
+    for (const event of ['timeupdate','seeked','seeking','loadedmetadata','ended']) {
+      video.addEventListener(event, update, {signal:events.signal});
+    }
+    video.addEventListener('load', update, {capture:true, signal:events.signal});
+    track.addEventListener('cuechange', update, {signal:events.signal});
+    video.textTracks.addEventListener('removetrack', checkTrack, {signal:events.signal});
+    refresh();
     function stop() {
-      version++;
+      if (!active) return;
+      active = false;
+      session.close();
       observer.disconnect();
-      video.textTracks.removeEventListener('removetrack', checkTrack);
-      track.removeEventListener('cuechange', update);
+      events.abort();
       for (const [t, previous] of originalModes) if (t.mode === 'hidden') t.mode = previous;
       output.remove();
       onStop();
     }
-    return { stop, refresh: update, setMode(next) { mode = next; draw(); }, get mode() { return mode; } };
+    return { stop, refresh, setMode(next) { mode = next; draw(); }, get mode() { return mode; } };
   }
   globalThis.bingduHtml5Captions = { candidate, start };
 })();

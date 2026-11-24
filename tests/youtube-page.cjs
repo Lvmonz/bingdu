@@ -57,30 +57,22 @@ async function installOfflineTranslator(context) {
       if (String(url) !== 'https://api.deepseek.com/chat/completions') throw Error('Unexpected endpoint');
       const request = JSON.parse(options.body);
       const input = request.messages.at(-1).content;
-      if (request.messages.length === 3) {
-        globalThis.subtitleRequests ||= [];
-        globalThis.subtitleRequests.push({ input, context:JSON.parse(request.messages[1].content).subtitleContext });
-      }
       const translate = (text, before) => {
         if (text === 'It feeds the lake.' && before === text) return '它为这座湖泊供水。';
+        if (/^Chapter \d+\.$/.test(text)) return text.replace(/^Chapter (\d+)\.$/,'第$1章');
         return dictionary[text.trim()] || '其他测试译文';
       };
       let content;
-      if (request.response_format) {
-        const entries = JSON.parse(input);
-        if (globalThis.holdBatch && entries.some(row => row.text === 'Chapter 21.')) {
+      if (input.endsWith('[[source_end]]')) {
+        const entries = [...input.matchAll(/^\[\[p(\d+)\]\]\n([^\n]+)/gm)];
+        (globalThis.subtitleRequests ||= []).push(entries.map(row=>row[2]));
+        if (globalThis.holdBatch && entries.some(row=>row[2] === 'Chapter 10.')) {
           await new Promise(resolve => { globalThis.releaseBatch = resolve; });
         }
-        const translations = Object.fromEntries(entries.map((row, i) => {
-          if (row.text === 'Chapter 21.') return [row.id, row.draft ? '第21章' : '这是一段足够长的中文初稿用来验证字幕会按可读时长再精简一次'];
-          if (row.text === 'We study the river basin.') return [row.id, row.draft ? '我们研究流域。' : '我们研究流或。'];
-          if (row.text === 'Chapter 20.') return [row.id, row.draft ? '第2章' : '第20章'];
-          return [row.id, translate(row.text, entries[i - 1]?.text)];
-        }));
-        content = JSON.stringify({ translations });
-      } else {
-        content = translate(input);
-      }
+        content = entries.map(([_,id,text],i) => '[[p'+id+']]\n'+translate(text,entries[i-1]?.[2])).reverse().join('\n');
+      } else if (request.response_format) {
+        content = JSON.stringify({translations:Object.fromEntries(JSON.parse(input).map(row=>[row.id,translate(row.text)]))});
+      } else content = translate(input);
       return Response.json({ choices: [{ finish_reason: 'stop', message: { content } }] });
     };
   }, words);
@@ -137,9 +129,9 @@ async function checkSingleCaptionBox(page) {
 
   // Each ASR window stays painted into the next. The second window ends
   // one sentence and begins another. Preload it before the reader enables CC.
-  const trackUrl = 'https://www.youtube.com/api/timedtext?v=fixture&kind=asr&lang=en&fmt=json3';
+  const trackUrl = 'https://www.youtube.com/api/timedtext?v=fixture&lang=en&fmt=json3';
   const events = [
-    {tStartMs:22000,dDurationMs:4500,segs:[{utf8:'We'},{utf8:' study',tOffsetMs:240},{utf8:' the',tOffsetMs:920}]},
+    {tStartMs:22000,dDurationMs:4500,segs:[{utf8:'We',acAsrConf:0},{utf8:' study',tOffsetMs:240},{utf8:' the',tOffsetMs:920}]},
     {tStartMs:23000,dDurationMs:4000,segs:[{utf8:'river'},{utf8:' basin.',tOffsetMs:500},
       {utf8:' It',tOffsetMs:1600},{utf8:' feeds',tOffsetMs:1800}]},
     {tStartMs:25000,dDurationMs:4000,segs:[{utf8:'the'},{utf8:' lake.',tOffsetMs:400}]},
@@ -160,7 +152,7 @@ async function checkSingleCaptionBox(page) {
   }
   const [worker] = page.context().serviceWorkers();
   await worker.evaluate(() => { globalThis.holdBatch = true; });
-  // A real seekable media clock exercises pause/resume from the extension's isolated world.
+  // Use a seekable media clock to verify captions never interrupt playback.
   const sampleCount = 120 * 8000;
   const wav = Buffer.alloc(44 + sampleCount, 128);
   wav.write('RIFF'); wav.writeUInt32LE(36 + sampleCount, 4); wav.write('WAVEfmt ', 8);
@@ -180,18 +172,15 @@ async function checkSingleCaptionBox(page) {
     for (const name of ['play','pause']) v.addEventListener(name, () => window.playEvents.push(name));
   });
   await choose('双语字幕');
-  await page.getByText(/正在准备整段字幕/).waitFor();
-  await page.waitForFunction(() => window.playEvents.includes('pause'));
+  await expectText(page, '.pt-youtube-caption', 'We study the river basin.');
+  assert.deepEqual(await page.evaluate(() => window.playEvents), []);
   await worker.evaluate(async () => {
     const deadline = Date.now() + 5000;
     while (!globalThis.releaseBatch && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 20));
-    if (!globalThis.releaseBatch) throw Error('The full-track queue did not reach the last batch');
+    if (!globalThis.releaseBatch) throw Error('The lookahead request was never issued');
     globalThis.holdBatch = false;
     globalThis.releaseBatch();
   });
-  await expectText(page, '.pt-youtube-caption', 'We study the river basin.');
-  await page.waitForFunction(() => window.playEvents.includes('play'));
-  assert.deepEqual(await page.evaluate(() => window.playEvents), ['pause', 'play']);
   await page.locator('video').evaluate(v => v.pause());
   await seek(23.8);
   assert.equal(await page.locator('.pt-caption-source').textContent(), 'We study the river basin.');
@@ -201,7 +190,7 @@ async function checkSingleCaptionBox(page) {
   await page.waitForFunction(() => document.querySelector('.pt-caption-target')?.textContent === '它为这座湖泊供水。');
   await seek(32);
   await page.locator('.pt-youtube-caption').waitFor({state:'hidden'});
-  const count = await worker.evaluate(() => globalThis.subtitleRequests.length);
+  const beforeSeek = await worker.evaluate(() => globalThis.subtitleRequests.length);
   await seek(113.3);
   await page.waitForFunction(() => document.querySelector('.pt-caption-target')?.textContent === '第21章');
   await seek(110.3);
@@ -215,28 +204,26 @@ async function checkSingleCaptionBox(page) {
       range.selectNodeContents(el.querySelector(selector));
       return [...new Set([...range.getClientRects()].filter(r => r.width).map(r => r.top))];
     };
-    return { top:anchor.top, left:anchor.left, width:anchor.width, english:tops('.pt-caption-source'), chinese:tops('.pt-caption-target') };
+    return { bottom:anchor.bottom, center:anchor.left + anchor.width/2, width:anchor.width, height:anchor.height, english:tops('.pt-caption-source'), chinese:tops('.pt-caption-target') };
   });
-  await page.waitForFunction(() => document.querySelector('.pt-youtube-caption').getBoundingClientRect().width < 210 &&
-    parseInt(document.querySelector('.pt-youtube-caption').style.getPropertyValue('--pt-source-height')) >= 3);
+  await page.waitForFunction(() => document.querySelector('.pt-youtube-caption').getBoundingClientRect().width < 210);
   const shortLayout = await layout();
   await seek(116.2);
   await page.waitForFunction(s => document.querySelector('.pt-caption-source')?.textContent === s, finalLine);
   const longLayout = await layout();
   assert.ok(longLayout.english.length >= 3 && shortLayout.english.length === 1);
-  for (const k of ['top','left','width']) assert.ok(Math.abs(shortLayout[k] - longLayout[k]) < 1, k);
-  for (const k of ['english','chinese']) assert.ok(Math.abs(shortLayout[k][0] - longLayout[k][0]) < 1, k);
+  for (const k of ['bottom','center']) assert.ok(Math.abs(shortLayout[k] - longLayout[k]) < 1, k);
+  assert.ok(shortLayout.height < longLayout.height && shortLayout.width < longLayout.width);
   await page.locator('#movie_player').evaluate(el => { el.style.removeProperty('width'); el.style.removeProperty('position'); });
   await seek(22.4);
   await choose('仅译文字幕');
   await expectText(page, '.pt-caption-target', 'We study the river basin.', 'only');
   assert.ok(await page.locator('.pt-caption-source').isHidden());
   const requests = await worker.evaluate(() => globalThis.subtitleRequests);
-  assert.equal(requests.length, count, 'Seeking through a prepared track must make no translation requests');
-  assert.ok(requests.some(({input, context}) => input.includes('We study the river basin.') && context.after.startsWith('Chapter') &&
-    JSON.parse(input)[0].id === 't1' && JSON.parse(input)[0].preferredChars > 0));
-  assert.ok(requests.some(({input}) => input.includes('"draft"') && input.includes('Chapter 21.')));
-  assert.ok(requests.some(({input}) => input.includes('我们研究流或。')), 'Short drafts must receive the same bilingual review');
+  assert.ok(requests.length > beforeSeek, 'Seeking beyond the buffered cues requests the new scene');
+  const count = requests.length;
+  assert.ok(requests.some(batch => batch.includes('We study the river basin.')));
+  assert.ok(requests.every(batch=>batch.length<=8));
   await choose('关闭字幕翻译');
 
   const authored = 'https://www.youtube.com/api/timedtext?v=fixture&lang=zh-Hans&fmt=json3';
@@ -265,6 +252,49 @@ async function checkSingleCaptionBox(page) {
   assert.equal(manualRequests,1);
   assert.equal(await worker.evaluate(() => globalThis.subtitleRequests.length),count);
   await choose('关闭字幕翻译');
+}
+
+async function checkPlayerResponse(context) {
+  const page = await context.newPage();
+  try {
+    await page.goto(watch);
+    await page.locator('#movie_player').evaluate(player => {
+      const track = {languageCode:'en', vssId:'.en'};
+      player.getVideoData = () => ({video_id:'fixture'});
+      player.getPlayerResponse = () => ({videoDetails:{videoId:'fixture',defaultAudioLanguage:'en'}});
+      player.getOption = (_, key) => key === 'tracklist' ? [track] : track;
+      window.originalFetch = window.fetch;
+      window.originalOpen = XMLHttpRequest.prototype.open;
+    });
+    const more = page.getByRole('button',{name:'并读 · 更多操作'});
+    await more.click();
+    await page.getByRole('button',{name:'双语字幕',exact:true}).click();
+    await page.waitForFunction(()=>window.fetch !== window.originalFetch);
+    for (const transport of ['fetch','xhr']) {
+      const text = 'Fresh caption ' + transport;
+      const url = 'https://www.youtube.com/api/timedtext?v=fixture&lang=en&name=' + transport;
+      let reads = 0;
+      await page.route(url, route => route.fulfill({contentType:'application/json',
+        body:reads++ ? '' : JSON.stringify({events:[{tStartMs:0,dDurationMs:12000,segs:[{utf8:text}]}]})}));
+      const native = await page.evaluate(async ({url,transport}) => {
+        if (transport === 'fetch') return (await (await fetch(url)).json()).events[0].segs[0].utf8;
+        return new Promise(resolve => {
+          const xhr = new XMLHttpRequest();
+          xhr.open('GET',url);
+          xhr.responseType = 'json';
+          xhr.onload = () => resolve(xhr.response.events[0].segs[0].utf8);
+          xhr.send();
+        });
+      },{url,transport});
+      assert.equal(native,text);
+      await page.waitForFunction(t=>document.querySelector('.pt-caption-source')?.textContent===t &&
+        !!document.querySelector('.pt-caption-target')?.textContent,text,{timeout:5000});
+    }
+    const stop = page.getByRole('button',{name:'关闭字幕翻译',exact:true});
+    if (!await stop.isVisible()) await more.click();
+    await stop.click();
+    await page.waitForFunction(()=>window.fetch === window.originalFetch && XMLHttpRequest.prototype.open === window.originalOpen);
+  } finally { await page.close(); }
 }
 
 async function run() {
@@ -352,6 +382,7 @@ async function run() {
     await expectText(page, result, 'Island trails', 'original');
     assert.equal(await page.locator('#video-title').getAttribute('href'), '/watch?v=island');
     assert.equal(await page.locator('.pt-translation').count(), 0);
+    await checkPlayerResponse(context);
     console.log('YouTube webpage checks passed (watch, lazy comment, navigation, reused result, display modes, player isolation).');
   } finally {
     try { await context?.close(); } finally { await fs.rm(profile, { recursive: true, force: true }); }

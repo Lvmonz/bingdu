@@ -106,28 +106,11 @@
     let current = [];
     let currentCueStart;
     let cues = [];
-    const planner = globalThis.bingduYoutubeCaptionPlan;
+    const planner = globalThis.bingduCaptionTimeline;
     const canvas = document.createElement('canvas').getContext('2d');
     const formatted = new Map();
     let textWidth = 0, fontSize = 16;
     let plan;
-    function reserveTrackRows() {
-      if (plan?.state !== 'ready' || textWidth <= 0) return;
-      let sourceLines = 2, targetLines = 2;
-      let simultaneous = [];
-      const measure = text => canvas.measureText(text).width;
-      for (const card of plan.cards) {
-        simultaneous = simultaneous.filter(other => other.displayEnd > card.start);
-        simultaneous.push(card);
-        const source = simultaneous.map(other => other.text).join(' ');
-        let translated = simultaneous.map(other => other.translation).join(' ');
-        if (base(target) === 'zh') translated = planner.chineseLines(translated, measure, textWidth, 18 * fontSize);
-        sourceLines = Math.max(sourceLines, planner.lineCount(source, measure, textWidth));
-        targetLines = Math.max(targetLines, planner.lineCount(translated, measure, textWidth));
-      }
-      output.style.setProperty('--pt-source-height', sourceLines + 'lh');
-      output.style.setProperty('--pt-target-height', targetLines + 'lh');
-    }
     function measurePlayer() {
       const width = player.clientWidth;
       if (!width || !canvas) return;
@@ -139,12 +122,10 @@
       if (available === textWidth) return;
       textWidth = available;
       formatted.clear();
-      reserveTrackRows();
     }
     const playerSize = new ResizeObserver(() => { measurePlayer(); draw(); });
     playerSize.observe(player);
     measurePlayer();
-    let heldVideo;
     let timer;
     let blockedUntil = 0;
     let requestedCC = false;
@@ -188,99 +169,58 @@
       if (row.textContent !== text) row.textContent = text;
       row.hidden = !text;
     }
-    function releasePlayback(resume) {
-      const held = heldVideo;
-      heldVideo = undefined;
-      if (resume && held === video && held?.isConnected && held.paused && !held.ended && id === videoId()) {
-        held.play().catch(() => {});
-      }
-    }
-    function discardPlan(resume = true) {
+    function discardPlan() {
       plan?.controller.abort();
+      plan?.session?.close();
       plan = undefined;
-      output.style.removeProperty('--pt-source-height');
-      output.style.removeProperty('--pt-target-height');
-      releasePlayback(resume);
     }
     function planEligible() {
       return planner && cues.length && !cueInfo.translated && base(cueInfo.language) &&
         base(cueInfo.language) === base(trackState.language) && !sameLanguage(cueInfo.language, target) &&
         video.duration !== Infinity && !player.classList.contains('ytp-live');
     }
-    function configureCards(cards) {
-      planner.configureWindows(cards, base(target) === 'zh', video.playbackRate || 1, video.duration);
-    }
     function beginPlan() {
       epoch++;
       pending.clear();
       clearTimeout(timer);
-      // Both languages share an immutable source timeline, including when seeking.
       const cards = cues.map(cue => ({...cue}));
-      configureCards(cards);
-      const preparing = { cards, done: 0, state: 'loading', controller:new AbortController() };
-      plan = preparing;
-      if (!video.paused && !video.ended) {
-        heldVideo = video;
-        video.pause();
-      }
-      const cancelled = () => !active || plan !== preparing || id !== videoId();
+      planner.indexCards(cards);
+      const currentPlan = {cards, controller:new AbortController()};
+      plan = currentPlan;
       const title = document.title.replace(/\s*[-–]\s*YouTube\s*$/i, '').slice(0, 180);
-      const prepareAll = async () => {
-        if (trackState.authoredUrl && base(target) === 'zh') {
-          const track = await globalThis.bingduReadAuthoredCaption?.(trackState.authoredUrl, mediaId, target, preparing.controller.signal);
-          if (cancelled()) return;
-          const aligned = globalThis.bingduSubtitleSemantics.alignHuman(cues, track);
-          if (aligned) return aligned;
-        }
-        return planner.prepare(cards, translate, { title, currentTime: video.currentTime, cancelled,
-          progress(done) { preparing.done = done; draw(); } });
-      };
-      prepareAll().then(ready => {
-        if (cancelled()) return;
-        preparing.cards = ready;
-        configureCards(ready);
-        preparing.state = 'ready';
-        reserveTrackRows();
-        draw();
-        releasePlayback(true);
-      }).catch(error => {
-        if (cancelled()) return;
-        preparing.state = 'failed';
-        if (/401|402|API Key/.test(error.message)) { notice(error.message); stop(true); return; }
-        notice('整轨字幕准备中断，已切回随播翻译。' + error.message);
-        releasePlayback(true);
-        reset();
+      const startRequests = () => {
+        currentPlan.session = planner.createSession(cards, translate, {title, repaint:draw,
+          onError(error) {
+            if (shownError !== error.message) { notice(error.message); shownError = error.message; }
+            if (/401|402|API Key/.test(error.message)) stop(true);
+          }});
         scan();
+      };
+      if (!trackState.authoredUrl) { startRequests(); return; }
+      const signal = currentPlan.controller.signal;
+      globalThis.bingduReadAuthoredCaption(trackState.authoredUrl, mediaId, target, signal).then(track => {
+        if (signal.aborted) return;
+        const aligned = globalThis.bingduSubtitleSemantics.alignHuman(cues, track);
+        if (!aligned) { startRequests(); return; }
+        planner.indexCards(aligned);
+        currentPlan.cards = aligned;
+        draw();
       });
     }
     function draw() {
-      if (plan && plan.state !== 'failed' && planEligible()) {
-        const hidden = suppressed();
-        const visible = !hidden && plan.state === 'ready' ? planner.atTime(plan.cards, video.currentTime) : [];
+      if (plan && planEligible()) {
+        const visible = suppressed() ? [] : planner.atTime(plan.cards, video.currentTime);
         const source = mode === 'dual' ? visible.map(card => card.text).join(' ') : '';
-        const translated = visible.map(card => card.translation).join(' ');
-        const loading = !hidden && plan.state === 'loading';
-        output.toggleAttribute('data-bilingual', !!source);
+        const translated = visible.every(card => card.translation) ? visible.map(card => card.translation).join(' ') : '';
         renderRow(sourceRow, source);
-        renderRow(targetRow, loading ? `正在准备整段字幕 · ${plan.done}/${plan.cards.length}` :
-          source && compare(source) === compare(translated) ? '' : translated);
+        renderRow(targetRow, source && compare(source) === compare(translated) ? '' : translated);
         output.hidden = sourceRow.hidden && targetRow.hidden;
         return;
       }
       const original = current.join(' ');
-      const parts = current.map(line => {
-        const key = captionKey(line);
-        if (cache.has(key)) return cache.get(key);
-        if (cueInfo.segmented) return '';
-        for (let cut = line.lastIndexOf(' '); cut >= 4; cut = line.lastIndexOf(' ', cut - 1)) {
-          const prefix = line.slice(0, cut);
-          if (cache.has(prefix)) return cache.get(prefix);
-        }
-        return '';
-      });
-      const translation = showNativeAsTarget ? original : parts.filter(Boolean).join(' ');
+      const parts = current.map(line => cache.get(captionKey(line)));
+      const translation = showNativeAsTarget ? original : parts.every(Boolean) ? parts.join(' ') : '';
       const showBoth = mode === 'dual' && usingSource && !showNativeAsTarget;
-      output.toggleAttribute('data-bilingual', showBoth);
       renderRow(sourceRow, showBoth ? original : '');
       renderRow(targetRow, showBoth && compare(original) === compare(translation) ? '' : translation);
       output.hidden = sourceRow.hidden && targetRow.hidden;
@@ -315,7 +255,11 @@
       }
       if (planEligible()) {
         if (!plan && !suppressed()) beginPlan();
-        if (plan && plan.state !== 'failed') { draw(); return; }
+        if (plan) {
+          draw();
+          if (!suppressed()) plan.session?.update(video.currentTime);
+          return;
+        }
       } else if (plan) discardPlan();
       let rows = suppressed() ? [] : captionLines(player);
       const visible = rows.join(' ');
@@ -447,7 +391,7 @@
       }
     }
     function pump() {
-      if (plan && plan.state !== 'failed') return;
+      if (plan) return;
       if (!active || !current.length || showNativeAsTarget || suppressed() || running >= 2 || Date.now() < blockedUntil) return;
       firstChange = 0;
       const missing = (lines, future = false) => [...new Set(lines)].filter(line => {
@@ -492,13 +436,6 @@
     function bindVideo() {
       videoEvents?.abort();
       videoEvents = new AbortController();
-      // A user's play or seek while preparing takes ownership of playback.
-      for (const type of ['play','seeking']) video.addEventListener(type, () => {
-        if (heldVideo === video && (type === 'seeking' || !video.paused)) releasePlayback(false);
-      }, { signal: videoEvents.signal });
-      video.addEventListener('ratechange', () => {
-        if (plan?.state === 'ready') { configureCards(plan.cards); draw(); }
-      }, { signal: videoEvents.signal });
       for (const type of ['seeking','ended','emptied','seeked','timeupdate']) {
         video.addEventListener(type, type === 'seeked' || type === 'timeupdate' ? scan : reset, { signal: videoEvents.signal });
       }
@@ -546,7 +483,7 @@
     function stop(restoreCC = true) {
       if (!active) return;
       active = false;
-      discardPlan(restoreCC);
+      discardPlan();
       reset();
       observer.disconnect();
       playerTree.disconnect();
@@ -605,21 +542,18 @@
     bindVideo();
     listen(document, 'yt-navigate-finish', () => { if (id !== videoId()) stop(false); });
     listen(window, 'pagehide', () => stop(true));
-    if (hasButton && button.getAttribute('aria-pressed') === 'false') {
-      requestedCC = true;
-      button.click();
-    }
+    requestedCC = hasButton && button.getAttribute('aria-pressed') === 'false';
     handshakeTimer = setTimeout(() => {
       if (active && trackState.status === 'pending') { trackState.status = 'unsupported'; reset(); scan(); }
     }, 10500);
     function followTimeline(nextId) {
       stopHints();
-      discardPlan(false);
+      discardPlan();
       cues = [];
       hint = {};
       cueInfo = {};
       mediaId = nextId;
-      stopHints = globalThis.bingduYoutubeTrackHints?.(mediaId, onTimeline) || (() => {});
+      stopHints = globalThis.bingduYoutubeTrackHints?.(mediaId, onTimeline, () => session) || (() => {});
     }
     function onTimeline(timeline, info) {
       if (!active) return;
@@ -636,6 +570,7 @@
     }
     if (!embed) followTimeline(id);
     sendSource('start');
+    if (requestedCC && button?.getAttribute('aria-pressed') === 'false') button.click();
     scan();
     return { stop, refresh, setMode, get mode() { return mode; } };
   }

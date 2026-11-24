@@ -12,8 +12,11 @@
         const {start,text} = tokens[i], end = tokens[i+1]?.start ?? cue.end;
         while (cursor < target.length && target[cursor].end <= start) cursor++;
         let best = -1, overlap = 0, first = -1, last = -1;
-        for (let j=cursor; j<target.length && target[j].start < end; j++) {
-          const shared = Math.min(end,target[j].end) - Math.max(start,target[j].start);
+        // A final word can start exactly at the cue end. Match its timestamp
+        // without extending the source card's display interval.
+        const matchEnd = end > start ? end : start + .001;
+        for (let j=cursor; j<target.length && target[j].start < matchEnd; j++) {
+          const shared = Math.min(matchEnd,target[j].end) - Math.max(start,target[j].start);
           if (shared > 0) { if (first < 0) first = j; last = j; }
           if (shared > overlap) { best=j; overlap=shared; }
         }
@@ -22,10 +25,10 @@
         if (first < lastTarget && last !== lastTarget || first > lastTarget + 1) return null;
         const g = groups.at(-1);
         if (g && first <= g.last) {
-          g.text += ' ' + text;
+          g.text += cue.words?.length ? text : ' ' + text;
           g.end = Math.max(end, g.end);
           g.last = Math.max(g.last,last);
-        } else groups.push({first,last,start,end,text});
+        } else groups.push({first,last,start,end,text:text.trimStart()});
         lastTarget = last;
       }
     }

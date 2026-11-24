@@ -73,11 +73,13 @@ async function mockModel(worker) {
       if (String(url) !== 'https://api.deepseek.com/chat/completions') throw Error('Unexpected service');
       const request = JSON.parse(options.body);
       const original = request.messages.at(-1).content;
+      if (original.endsWith('[[source_end]]')) (globalThis.captionBatches ||= []).push(original);
       if (original.includes('Delayed caption')) await globalThis.captionGate;
       const translated = text => text === 'Delayed caption' ? '这段译文会在原文出现后才返回，并且需要在较窄的播放器中显示为两行文字。' : '译：' + text;
       const content = request.response_format
         ? JSON.stringify({ translations: Object.fromEntries(JSON.parse(original).map(row => [row.id, translated(row.text)])) })
-        : translated(original);
+        : original.endsWith('[[source_end]]') ? [...original.matchAll(/^\[\[p(\d+)\]\]\n([^\n]+)/gm)]
+          .map(([_,id,text])=>'[[p'+id+']]\n'+translated(text)).reverse().join('\n') : translated(original);
       return Response.json({ choices: [{ finish_reason: 'stop', message: { content } }] });
     };
   });
@@ -117,7 +119,8 @@ async function captionState(frame, mode, cue) {
     const target = boxes[0].querySelector('.pt-caption-target');
     return !target.hidden && target.textContent === '译：' + cue && (mode === 'only'
       ? source.hidden : !source.hidden && source.textContent === cue);
-  }, { mode, cue, initialCC }, { timeout: 8000 }).catch(error => {
+  }, { mode, cue, initialCC }, { timeout: 8000 }).catch(async error => {
+    console.log(await frame.evaluate(()=>({rows:document.querySelector('.pt-youtube-caption')?.innerText, cc:document.querySelector('#cc')?.getAttribute('aria-pressed'),native:document.querySelector('.ytp-caption-window-container')?.textContent,notice:document.querySelector('#pt-notice')?.textContent})));
     throw new Error(`Expected ${mode} captions in ${frame.url()}`, { cause:error });
   });
 }
@@ -155,7 +158,7 @@ async function checkCaptionPosition(frame, worker) {
   assert.equal(wrapped, 2, 'The delayed target must wrap onto a second line');
   const translated = await metrics();
   stable(pending.bottom, translated.bottom, 'Translation moved the anchor');
-  stable(pending.sourceY, translated.sourceY, 'Late translation moved the original');
+  stable(pending.center, translated.center, 'Late translation moved the horizontal center');
   await native.evaluate(el => {
     el.removeAttribute('style');
     el.replaceWith(el.cloneNode(true));
@@ -279,7 +282,7 @@ async function run() {
     assert.equal(await popup.getByRole('button', {name:'双语字幕', exact:true}).isVisible(), false);
     // A local MediaStream advances actual Chromium TextTrack cues, without a
     // test video file or an overridden activeCues getter.
-    await generic.evaluate(async () => {
+    const unseen = await generic.evaluate(async () => {
       const video = document.querySelector('video');
       const canvas = document.querySelector('canvas');
       const drawing = canvas.getContext('2d');
@@ -293,12 +296,17 @@ async function run() {
       const track = video.addTextTrack('subtitles', 'English', 'en');
       track.mode = 'showing';
       track.addCue(new VTTCue(0, 600, 'A native caption.'));
+      const unseen = 'Une phrase ' + crypto.randomUUID();
+      track.addCue(new VTTCue(600, 605, unseen));
       await video.play();
+      return unseen;
     });
     await generic.waitForFunction(() => document.querySelector('video').textTracks[0].activeCues?.length === 1);
     await popup.getByRole('button', {name:'双语字幕', exact:true}).click();
     await generic.waitForFunction(() => document.querySelector('.pt-html5-caption')?.textContent === 'A native caption.\n译：A native caption.' &&
       document.querySelector('video').textTracks[0].mode === 'hidden');
+    assert.ok(await worker.evaluate(text=>globalThis.captionBatches.some(batch=>
+      batch.includes('A native caption.') && batch.includes(text)), unseen), 'A new native track uses the shared batch translator');
     await panel.getByRole('button', {name:'仅译文字幕', exact:true}).click();
     await generic.waitForFunction(() => document.querySelector('.pt-html5-caption')?.textContent === '译：A native caption.');
     await panel.getByRole('button', {name:'关闭字幕翻译', exact:true}).click();

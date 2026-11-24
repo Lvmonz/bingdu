@@ -46,87 +46,184 @@
     return value.split(':').reduce((total, part) => total * 60 + Number(part), 0);
   }
 
-  // ASR display windows overlap to keep earlier words on screen. Word offsets,
-  // unlike window end times, describe when each part of the utterance begins.
-  function speechCues(events) {
+  const punctuation = /[.?!。？！]/u;
+  const abbreviation = /(?:\b(?:etc|mr|mrs|ms|dr|prof|sr|jr|co|inc|ltd|st)\.|u\.s\.|u\.k\.|p\.a\.|\d+\.)/i;
+  const markers = new Set(['mhm', 'um', '>>', '-']);
+  const turns = new Set([...markers, 'in fact', 'such as', 'or even', 'get me', "well i'm", "i didn't", 'i know', 'i need', 'i will', "i'll", 'i mean', 'you are', 'what does', 'no problem', 'as we', 'if you', 'hello', 'okay', 'oh', 'yep', 'yes', 'hey', 'hi', 'yeah', 'essentially', 'because', 'and', 'but', 'which', 'so', 'where', 'what', 'now', 'or', 'how', 'after']);
+  const continueAfter = new Set('in is and are not an a some the but our for of if his her my come mean why this has make p.m a.m'.split(' '));
+  const continueBefore = new Set('or to in has of are is with'.split(' '));
+
+  const joined = group => group.map(word => word.text).join('');
+  const wordCount = group => joined(group).split(/\s+/u).length;
+
+  function cutAtPauses(group, threshold, breaks, omitFillers) {
+    const parts = [];
+    let current = [];
+    let previous = group[0].time;
+    for (let i = 0; i < group.length; i++) {
+      const word = group[i], next = group[i + 1];
+      const gap = word.time - previous;
+      const single = gap > 300 && breaks.has(word.text.trim().toLowerCase());
+      const double = !single && gap > 300 && next && breaks.has((word.text + next.text).trim().toLowerCase());
+      const previousEnd = current.at(-1)?.windowEnd;
+      if (single || double || gap > threshold || previousEnd < word.time) {
+        if (current.length) parts.push(current);
+        current = [];
+      }
+      if (single || double) word.explicitBreak = true;
+      if (omitFillers && word.text.trim().toLowerCase() === 'uh' && next && !single && !double) {
+        current.push(word, next);
+        previous = next.time;
+        i++;
+      } else {
+        current.push(word);
+        if (double) { current.push(next); i++; }
+        previous = word.time;
+      }
+    }
+    if (current.length) parts.push(current);
+    return parts;
+  }
+
+  function fitLongGroups(group, pause, breaks, omitFillers) {
+    const result = [];
+    let singletons = [];
+    const flush = () => { if (singletons.length) result.push(singletons); singletons = []; };
+    for (const part of cutAtPauses(group, pause, breaks, omitFillers)) {
+      if (part.length > 1 && wordCount(part) > 17 && pause >= 0) {
+        flush();
+        result.push(...fitLongGroups(part, pause - 100, breaks, omitFillers));
+      } else if (part.length === 1 && wordCount(part) <= 1) {
+        singletons.push(part[0]);
+      } else {
+        flush();
+        result.push(part);
+      }
+    }
+    flush();
+    return result;
+  }
+
+  function joinShortTails(groups) {
+    const joinedGroups = [];
+    for (const group of groups) {
+      const prev = joinedGroups.at(-1), first = group[0];
+      if (prev && !first.explicitBreak && first.time - prev.at(-1).time <= 1500 &&
+          (continueAfter.has(prev.at(-1).text.trim().toLowerCase()) || continueBefore.has(first.text.trim().toLowerCase())) &&
+          wordCount([...prev, ...group]) <= 19) prev.push(...group);
+      else joinedGroups.push(group);
+    }
+    for (const [maxGap, maxTail] of [[1000, 3], [1500, 1]]) {
+      for (let i = joinedGroups.length - 1; i > 0; i--) {
+        const tail = joinedGroups[i], prev = joinedGroups[i - 1];
+        if (tail.length <= maxTail && tail.length + prev.length < 20 && !tail[0].explicitBreak &&
+            tail[0].time - prev.at(-1).time <= maxGap) {
+          prev.push(...tail);
+          joinedGroups.splice(i, 1);
+        }
+      }
+    }
+    return joinedGroups;
+  }
+
+  // Word offsets are the smallest reliable time unit. Map locale-aware sentence
+  // boundaries back to those offsets, and cap continuous unpunctuated speech.
+  function localizedGroups(words, language) {
+    let segmenter;
+    try { segmenter = new Intl.Segmenter(language || undefined, {granularity:'sentence'}); }
+    catch { segmenter = new Intl.Segmenter(undefined, {granularity:'sentence'}); }
+    const text = joined(words);
+    const ends = Array.from(segmenter.segment(text), s => s.index + s.segment.trimEnd().length);
+    const groups = [];
+    let first = 0, offset = 0, sentence = 0;
+    for (let i = 0; i < words.length; i++) {
+      const word = words[i], next = words[i + 1];
+      offset += word.text.length;
+      const boundary = ends[sentence] <= offset;
+      while (ends[sentence] <= offset) sentence++;
+      if (!next || boundary || next.time - word.time >= 1000 || word.windowEnd < next.time ||
+          next.time - words[first].time >= 5500) {
+        groups.push(words.slice(first, i + 1));
+        first = i + 1;
+      }
+    }
+    return groups;
+  }
+
+  function speechCues(events, language) {
+    const english = /^en(?:-|$)/i.test(language);
     const words = [];
-    for (const { start, duration, segments } of events) {
-      if (!Number.isFinite(start) || start < 0 || !Number.isFinite(duration) || duration <= 0 || duration > 120000) return [];
+    for (const {start, duration, segments} of events) {
+      if (!Number.isFinite(start) || start < 0 || !(duration > 0 && duration <= 120000)) continue;
+      const firstIndex = words.length;
       for (const segment of segments) {
-        const text = typeof segment.text === 'string' ? segment.text.trim() : '';
-        if (!text) continue;
-        const at = start + (segment.offset ?? 0);
-        const previous = words.at(-1);
-        if (!Number.isFinite(at) || at < start || at >= start + duration || at < (previous?.at ?? 0)) return [];
-        const suffix = /^[.,!?;:%)\]]|^['’](?:s|re|ll|ve|d|t|m)\b/i.test(text);
-        if (previous && (at === previous.at || suffix && at <= previous.end)) {
-          previous.text += (suffix ? '' : ' ') + text;
-          previous.end = Math.max(previous.end, start + duration);
-          continue;
-        }
-        words.push({ text, at, end: start + duration });
+        if (typeof segment.text !== 'string' || !segment.text.trim()) continue;
+        const time = start + (segment.offset ?? 0);
+        if (!Number.isFinite(time) || time < start || time > start + duration ||
+            (words.length && time < words.at(-1).time)) return [];
+        // A new rolling window often begins without a leading space.
+        const text = firstIndex === words.length && words.length && !/^\s|^[\p{P}]/u.test(segment.text) &&
+          !/[\p{sc=Han}\p{sc=Hiragana}\p{sc=Katakana}\p{sc=Thai}\p{sc=Lao}\p{sc=Khmer}\p{sc=Myanmar}]/u.test(words.at(-1).text.slice(-1) + segment.text[0])
+          ? ' ' + segment.text : segment.text;
+        words.push({time, text});
       }
+      if (words.length > firstIndex) words.at(-1).windowEnd = start + duration;
     }
-    const cues = [];
-    const terminal = text => /[.!?…][”"'’)]*$/.test(text) &&
-      !/^(?:mr|mrs|ms|dr|prof|sr|jr|co|inc|etc|st|e\.g|i\.e|(?:[a-z]\.)*[a-z]|\d+)\.$/i.test(text);
-    const punctuated = words.filter(word => terminal(word.text)).length >= 10;
-    const clauseStart = /^(?:and|but|because|which|so|while|when|although|well|okay|yeah|um)$/i;
-    const unfinished = /\b(?:a|an|the|of|for|to|with|between|and|or|not)$/i;
-
-    function emit(from,to) {
-      const last = words[to-1], next = words[to];
-      const end = Math.min(last.end, next?.at ?? Infinity, last.at + 1100);
-      const spoken = words.slice(from,to);
-      cues.push({start:spoken[0].at / 1000, end:end / 1000,
-        text:spoken.map(w => w.text).join(' '), words:spoken.map(w => ({text:w.text,start:w.at/1000}))});
-    }
-
-    function splitLong(from,to) {
-      // A punctuated sentence is already a good caption. For long speech, use
-      // the strongest pauses first. Never strand a single final spoken word.
-      const pending = [[from,to]];
-      while (pending.length) {
-        const [first,stop] = pending.pop();
-        if (stop-first <= 17) { emit(first,stop); continue; }
-        let best = 0, cuts = [];
-        for (let i=first+2; i<=stop-2; i++) {
-          if (unfinished.test(words[i-1].text)) continue;
-          const pause = Math.ceil((words[i].at - words[i-1].at) / 100);
-          if (pause > best) { best = pause; cuts = []; }
-          if (pause === best && (!cuts.length || i-cuts.at(-1)>=2)) cuts.push(i);
+    if (!words.length) return [];
+    // Phrase-timed ASR can carry offsets, too. Splitting these records as words
+    // would discard the original phrase boundaries and invent timing precision.
+    if (english && words.slice(0, 20).some(w => w.text.trim().split(/\s+/u).length >= 3)) return [];
+    const punctuated = words.filter(w => punctuation.test(w.text)).length >= 10;
+    let groups;
+    if (!english) {
+      groups = localizedGroups(words, language);
+    } else if (punctuated) {
+      const sentences = [];
+      let from = 0;
+      for (let i = 0; i < words.length; i++) {
+        const token = words[i].text.trim();
+        if (i === words.length - 1 || (punctuation.test(token.slice(-1)) && !abbreviation.test(token))) {
+          sentences.push(words.slice(from, i + 1));
+          from = i + 1;
         }
-        // With regular, equally spaced words there is no acoustic preference.
-        // Take a balanced break rather than issuing one card per tied pause.
-        if (!cuts.length || cuts.length > (stop-first)/5) {
-          const middle = (first+stop)/2;
-          cuts = [cuts.length ? cuts.reduce((x,y)=>Math.abs(x-middle)<=Math.abs(y-middle)?x:y) : Math.floor(middle)];
+      }
+      groups = sentences.flatMap(sentence => fitLongGroups(sentence, 5000, markers, false));
+    } else {
+      groups = joinShortTails(fitLongGroups(words, 1000, turns, true));
+    }
+    // Fast speech can have no punctuation or useful pauses. Bound the visual
+    // length at a real timestamp; tokens sharing an instant stay together.
+    groups = groups.flatMap(group => {
+      const parts = [];
+      let from = 0, length = 0;
+      for (let i = 0; i < group.length; i++) {
+        if (i > from && group[i].time > group[i-1].time &&
+            (i - from >= 19 || length + group[i].text.length > 115)) {
+          parts.push(group.slice(from, i));
+          from = i;
+          length = 0;
         }
-        const breaks = [first,...cuts,stop];
-        for (let i=breaks.length-1;i>0;i--) pending.push([breaks[i-1],breaks[i]]);
+        length += group[i].text.length;
       }
-    }
-
-    let start = 0;
-    for (let i=1;i<=words.length;i++) {
-      const prev = words[i-1], next = words[i];
-      const gap = next ? next.at-prev.at : Infinity;
-      const speaker = next && /^(?:>>|[–—])/.test(next.text);
-      const pause = gap > (punctuated ? 5000 : 1000) || (next && prev.end < next.at);
-      const clause = !punctuated && next && i-start >= 4 && gap > 300 &&
-        clauseStart.test(next.text) && !unfinished.test(prev.text);
-      if (!next || terminal(prev.text) || speaker || pause || clause) {
-        splitLong(start,i);
-        start = i;
-      }
-    }
-    return cues;
+      parts.push(group.slice(from));
+      return parts;
+    });
+    return groups.map((group, i) => {
+      const last = group.at(-1);
+      const next = groups[i+1]?.[0].time ?? (english ? last.time : last.windowEnd ?? last.time);
+      // The final single-word cue also needs a positive display interval.
+      const end = Math.min(last.windowEnd ?? next, next);
+      return {start:group[0].time / 1000,
+        end:(end > group[0].time ? end : last.windowEnd ?? last.time + 250) / 1000,
+        text:joined(group).replace(/\s+/gu, ' ').trim(),
+        words:group.map(word => ({text:word.text, start:word.time / 1000}))};
+    });
   }
 
   function parseTrack(raw, info) {
     const cues = [];
     const speech = [];
-    const segmentEnglish = info.automatic && !info.translated && /^en(?:-|$)/i.test(info.language);
+    const sourceTrack = !info.translated;
     let wordTimed = false;
     function add(start, duration, source) {
       const text = source.replace(/\s+/gu, ' ').trim();
@@ -138,12 +235,14 @@
     if (data.startsWith('{')) {
       const events = JSON.parse(data).events;
       if (!Array.isArray(events) || events.length > 20000) return [];
+      // Some player URLs omit kind=asr; the confidence field belongs to recognition results.
+      info.automatic ||= events.some(event => event?.segs?.some?.(seg => Number.isFinite(seg?.acAsrConf)));
       for (const event of events) {
         if (!Array.isArray(event?.segs) || !Number.isFinite(event.tStartMs)) continue;
         const text = event.segs.map(seg => typeof seg?.utf8 === 'string' ? seg.utf8 : '').join('');
         if (!text.trim()) continue;
         add(event.tStartMs / 1000, event.dDurationMs / 1000, text);
-        if (!segmentEnglish) continue;
+        if (!sourceTrack || !info.automatic) continue;
         wordTimed ||= event.segs.some(seg => Number.isFinite(seg?.tOffsetMs) && seg.tOffsetMs > 0);
         speech.push({ start:event.tStartMs, duration:event.dDurationMs,
           segments:event.segs.map(seg => ({text:seg?.utf8, offset:seg?.tOffsetMs})) });
@@ -159,7 +258,7 @@
         if (format === 'timedtext') {
           const start = Number(row.getAttribute('t')), duration = Number(row.getAttribute('d'));
           add(start / 1000, duration / 1000, row.textContent);
-          if (segmentEnglish && row.textContent.trim()) {
+          if (sourceTrack && info.automatic && row.textContent.trim()) {
             const spans = [...row.querySelectorAll('s')];
             wordTimed ||= spans.some(span => Number(span.getAttribute('t')) > 0);
             speech.push({ start, duration, segments:spans.length ? spans.map(span => ({
@@ -183,10 +282,17 @@
       }
     }
     if (wordTimed) {
-      const sentences = speechCues(speech);
+      const sentences = speechCues(speech, info.language);
       if (sentences.length) { info.segmented = true; return sentences; }
     }
-    return cues.sort((a, b) => a.start - b.start);
+    cues.sort((a, b) => a.start - b.start);
+    if (info.automatic && !info.translated) {
+      // Untimed ASR formats can still contain overlapping display windows.
+      // Retire the previous window when a later one starts.
+      for (let i = 1; i < cues.length; i++) cues[i-1].end = Math.min(cues[i-1].end, cues[i].start);
+      return cues.filter(cue => cue.end > cue.start);
+    }
+    return cues;
   }
 
   function allowedTrack(url, videoId) {
@@ -199,8 +305,8 @@
     try {
       const url = new URL(address);
       const lang = url.searchParams.get('lang') || '';
-      if (!allowedTrack(url, videoId) || !/^zh(?:-|$)/i.test(lang) ||
-          target !== 'zh' && new Intl.Locale(lang).maximize().script !== new Intl.Locale(target).maximize().script ||
+      if (!allowedTrack(url, videoId) || new Intl.Locale(lang).language !== new Intl.Locale(target).language ||
+          new Intl.Locale(target).script && new Intl.Locale(lang).maximize().script !== new Intl.Locale(target).script ||
           ['tlang','sq','seq','live'].some(field => url.searchParams.has(field)) ||
           ['asr','forced'].includes(url.searchParams.get('kind')) || /^a\./.test(url.searchParams.get('vssId') || '')) return [];
       if (authoredReads.size >= 16) authoredReads.delete(authoredReads.keys().next().value);
@@ -212,7 +318,7 @@
     } catch { return []; }
   };
 
-  globalThis.bingduYoutubeTrackHints = function (videoId, onCues) {
+  globalThis.bingduYoutubeTrackHints = function (videoId, onCues, currentSession) {
     if (!videoId) return () => {};
     let track = '';
     let latestStart = -1;
@@ -252,6 +358,26 @@
         automatic: url.searchParams.get('kind') === 'asr' || /^a\./.test(url.searchParams.get('vssId') || '') };
     }
 
+    const trackKey = url => JSON.stringify(['lang','tlang','kind','name','vssId'].map(k => url.searchParams.get(k)));
+    function received(event) {
+      if (!currentSession || typeof event.detail !== 'string' || event.detail.length > 3 * byteLimit) return;
+      try {
+        const {session, address, started, text} = JSON.parse(event.detail);
+        if (session !== currentSession() || typeof text !== 'string' || text.length > byteLimit || !Number.isFinite(started)) return;
+        const url = new URL(address);
+        if (!allowedTrack(url, videoId)) return;
+        const key = trackKey(url);
+        if ((loaded && key === track) || (track && key !== track && started < latestStart)) return;
+        const info = trackInfo(url), cues = parseTrack(text,info);
+        if (!cues.length) return;
+        pending?.abort();
+        track = key;
+        loaded = true;
+        latestStart = Math.max(latestStart, started);
+        onCues(cues,info);
+      } catch { /* The normal track reader still handles empty or unsupported bodies. */ }
+    }
+
     function observe(entries) {
       if (stopped) return;
       let latest;
@@ -270,7 +396,7 @@
       latestStart = latest.startTime;
       const { url } = latest;
       const params = url.searchParams;
-      const key = JSON.stringify(['lang', 'tlang', 'kind', 'name', 'vssId'].map(field => params.get(field)));
+      const key = trackKey(url);
       if (key !== track) {
         pending?.abort();
         track = key;
@@ -288,10 +414,12 @@
       void load(url, pending);
     }
 
+    globalThis.document?.addEventListener('bingdu-youtube-track-body',received);
     subscribers.add(observe);
     observe(recentTracks.values());
     return () => {
       stopped = true;
+      globalThis.document?.removeEventListener('bingdu-youtube-track-body',received);
       subscribers.delete(observe);
       pending?.abort();
       ownReads.clear();
